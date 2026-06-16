@@ -16,7 +16,7 @@ const GUARD_PATROL_SPEED = 72;
 const GUARD_SUSPICIOUS_SPEED = 88;
 const GUARD_CHASE_SPEED = 132;
 const GUARD_RETURN_SPEED = 82;
-const GUARD_STUN_MS = 1000;
+const GUARD_STUN_MS = 1500;
 const GUARD_SIGHT_DISTANCE = 220;
 const GUARD_CHASE_DISTANCE = 120;
 const GUARD_NEAR_DETECTION = 70;
@@ -180,6 +180,7 @@ class DungeonCrawlerScene extends Phaser.Scene {
   private guardSightGraphics!: Phaser.GameObjects.Graphics;
   private messageText!: Phaser.GameObjects.Text;
   private hudText!: Phaser.GameObjects.Text;
+  private statusText!: Phaser.GameObjects.Text;
   private controlsText!: Phaser.GameObjects.Text;
   private promptText!: Phaser.GameObjects.Text;
   private objectiveText!: Phaser.GameObjects.Text;
@@ -199,9 +200,11 @@ class DungeonCrawlerScene extends Phaser.Scene {
   private guardPatrolIndex = 0;
   private readonly patrolPoints = [
     new Phaser.Math.Vector2(650, 300),
-    new Phaser.Math.Vector2(740, 300),
-    new Phaser.Math.Vector2(740, 190),
-    new Phaser.Math.Vector2(650, 190),
+    new Phaser.Math.Vector2(700, 300),
+    new Phaser.Math.Vector2(700, 190),
+    new Phaser.Math.Vector2(750, 190),
+    new Phaser.Math.Vector2(700, 190),
+    new Phaser.Math.Vector2(700, 300),
   ];
   private wallRects: Phaser.Geom.Rectangle[] = [];
   private hasKey = false;
@@ -406,11 +409,12 @@ class DungeonCrawlerScene extends Phaser.Scene {
         .setDepth(20);
 
     this.hudText = makeText(18, 16, '18px');
+    this.statusText = makeText(18, 40, '16px', '#cdd6e1');
     this.controlsText = makeText(18, 594, '14px', '#cdd6e1');
     this.controlsText.setText(`Remappable controls ready: ${this.controls.summary()}`);
-    this.messageText = makeText(18, 44, '16px', '#f2cc6b');
+    this.messageText = makeText(18, 68, '16px', '#f2cc6b');
     this.promptText = makeText(18, 566, '16px', '#8fe3ff');
-    this.objectiveText = makeText(640, 16, '18px', '#ffd479').setOrigin(1, 0);
+    this.objectiveText = makeText(942, 16, '18px', '#ffd479').setOrigin(1, 0);
 
     this.guardSightGraphics = this.add.graphics().setDepth(2);
   }
@@ -776,12 +780,11 @@ class DungeonCrawlerScene extends Phaser.Scene {
     const cooldown = Math.max(0, this.dodgeCooldownEndsAt - now);
     const dodgeSeconds = cooldown > 0 ? (cooldown / 1000).toFixed(1) : 'ready';
     this.hudText.setText([
-      `Health ${'♥'.repeat(this.playerHealth)}${'·'.repeat(PLAYER_MAX_HEALTH - this.playerHealth)}`,
-      `Guard ${alertLabel}`,
-      `Key ${this.hasKey ? 'secured' : 'missing'}`,
+      `HP ${'♥'.repeat(this.playerHealth)}${'·'.repeat(PLAYER_MAX_HEALTH - this.playerHealth)}`,
+      `Key ${this.hasKey ? 'yes' : 'no'}`,
       `Dodge ${dodgeSeconds}`,
-      `State ${this.playerState}`,
     ].join('  •  '));
+    this.statusText.setText(`Guard ${alertLabel}  •  Player ${this.playerState}`);
 
     this.objectiveText.setText(this.missionComplete ? 'Archive breached — prototype clear.' : 'Objective: key → door → archive');
 
