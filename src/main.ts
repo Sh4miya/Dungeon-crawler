@@ -473,7 +473,12 @@ class DungeonCrawlerApp {
     this.player.blockTimer = Math.max(0, this.player.blockTimer - delta);
     this.player.stateTimer = Math.max(0, this.player.stateTimer - delta);
 
-    const cameraForward = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).normalize();
+    const cameraForward = this.camera.getWorldDirection(new THREE.Vector3());
+    cameraForward.y = 0;
+    if (cameraForward.lengthSq() < 0.0001) {
+      cameraForward.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    }
+    cameraForward.normalize();
     const cameraRight = new THREE.Vector3().crossVectors(cameraForward, new THREE.Vector3(0, 1, 0)).normalize();
 
     const moveInput = new THREE.Vector3();
