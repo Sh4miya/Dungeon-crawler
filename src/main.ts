@@ -269,68 +269,6 @@ class DungeonCrawlerApp {
       this.setMessage(this.player.torchOn ? 'Torch lit. Better visibility, louder silhouette.' : 'Torch lowered. Harder to see, harder to spot.');
     }
   };
-}
-class DungeonCrawlerScene extends Phaser.Scene {
-  private controls!: ControlManager;
-  private walls!: Phaser.Physics.Arcade.StaticGroup;
-  private player!: Phaser.Physics.Arcade.Sprite;
-  private guard!: Phaser.Physics.Arcade.Sprite;
-  private keyPickup?: Phaser.Physics.Arcade.Sprite;
-  private lockedDoor!: Phaser.Physics.Arcade.Sprite;
-  private lockedDoorCollider?: Phaser.Physics.Arcade.Collider;
-  private objectiveZone!: Phaser.GameObjects.Zone;
-  private playerLight!: Phaser.GameObjects.Light;
-  private guardSightGraphics!: Phaser.GameObjects.Graphics;
-  private messageText!: Phaser.GameObjects.Text;
-  private hudText!: Phaser.GameObjects.Text;
-  private statusText!: Phaser.GameObjects.Text;
-  private controlsText!: Phaser.GameObjects.Text;
-  private promptText!: Phaser.GameObjects.Text;
-  private objectiveText!: Phaser.GameObjects.Text;
-  private floorAccent!: Phaser.GameObjects.Graphics;
-  private playerState = PlayerState.Idle;
-  private playerStateEndsAt = 0;
-  private attackCooldownEndsAt = 0;
-  private dodgeCooldownEndsAt = 0;
-  private blockStartedAt = 0;
-  private playerFacing = new Phaser.Math.Vector2(1, 0);
-  private lastMoveDirection = new Phaser.Math.Vector2(1, 0);
-  private guardFacing = new Phaser.Math.Vector2(0, -1);
-  private guardState = GuardState.Patrol;
-  private guardStateUntil = 0;
-  private guardLastSeen = new Phaser.Math.Vector2(0, 0);
-  private guardSpawn = new Phaser.Math.Vector2(700, 300);
-  private guardPatrolIndex = 0;
-  private readonly patrolPoints = [
-    new Phaser.Math.Vector2(700, 300),
-    new Phaser.Math.Vector2(700, 192),
-    new Phaser.Math.Vector2(750, 192),
-    new Phaser.Math.Vector2(700, 192),
-    new Phaser.Math.Vector2(700, 300),
-    new Phaser.Math.Vector2(700, 520),
-    new Phaser.Math.Vector2(80, 520),
-    new Phaser.Math.Vector2(80, 120),
-    new Phaser.Math.Vector2(860, 120),
-    new Phaser.Math.Vector2(860, 520),
-    new Phaser.Math.Vector2(700, 520),
-  ];
-  private wallRects: Phaser.Geom.Rectangle[] = [];
-  private hasKey = false;
-  private doorUnlocked = false;
-  private playerHealth = PLAYER_MAX_HEALTH;
-  private playerDamageCooldownEndsAt = 0;
-  private missionComplete = false;
-  private currentPrompt = '';
-  private messageExpiresAt = 0;
-  private readonly playerSpawn = new Phaser.Math.Vector2(108, 320);
-
-  constructor() {
-    super('dungeon-crawler');
-  }
-
-  preload(): void {
-    this.createTextures();
-  }
 
   private readonly onKeyUp = (event: KeyboardEvent): void => {
     this.pressedKeys.delete(event.code);
