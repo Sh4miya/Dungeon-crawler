@@ -1,21 +1,22 @@
 # Dungeon Crawler Prototype
 
-Small vertical-slice prototype for the prison wing milestone.
+Small browser vertical slice for the prison wing milestone, now rebuilt as an **over-the-shoulder Three.js prototype**.
 
 ## What is in the build
 
-- Top-down Phaser 3 browser prototype
-- One prison-wing layout with collision boundaries
-- WASD / arrow-key movement
-- Mouse 1 melee strike
-- Mouse 2 guard / parry hold
+- Over-the-shoulder camera with wall-obstruction push-in
+- Player-relative WASD movement
+- Mouse-look facing and aiming
+- Left click melee strike
+- Right click block / parry hold
 - Space dodge with cooldown and brief invulnerability
-- Darkness layer powered by Phaser lights with a player sight radius
+- Toggle torch on `Q` for visibility-vs-detection risk
 - One guard with patrol, suspicious, chase, stun, and reset behavior
 - One key + one locked archive door
-- E or F interaction prompt flow
-- HUD for health, guard alert, key state, dodge cooldown, and player state
-- Centralized control binding layer (`ControlManager`) with a `rebind()` hook for future remapping UI
+- `E` or `F` interaction prompt flow
+- HUD for health, guard alert, key state, dodge cooldown, and torch state
+- Small prison-wing corridor loop ending in an archive exit zone
+- Engine decision notes in `docs/over-the-shoulder-spike.md`
 
 ## Run locally
 
@@ -33,21 +34,27 @@ npm run typecheck
 npm run build
 ```
 
-## Playtest checklist
+## Controls
 
-1. Start at the left side of the wing.
-2. Move with `WASD` (or arrow keys) and confirm wall collision works.
-3. Left click near the guard to test melee stagger.
-4. Hold right click to block; tap right click just before contact to parry and stun.
-5. Press `Space` to dodge and confirm the cooldown updates in the HUD.
-6. Sneak past the guard, collect the brass key, and return to the locked door.
-7. Press `E` or `F` at the door to unlock it.
-8. Walk into the archive chamber to complete the prototype loop.
-9. Confirm darkness limits visibility outside the player light radius.
-10. Let the guard spot you, then break line-of-sight and watch it reset to patrol.
+1. Click the game viewport to capture the mouse.
+2. Move with `WASD` (or arrow keys).
+3. Move the mouse to aim/focus the shoulder camera.
+4. Left click near the guard to test melee stagger.
+5. Hold right click to block; click it just before contact to parry and stun.
+6. Press `Space` to dodge and confirm the cooldown updates in the HUD.
+7. Press `Q` to toggle the torch.
+8. Sneak past the guard, collect the brass key, and return to the locked door.
+9. Press `E` or `F` at the door to unlock it.
+10. Walk into the archive chamber to complete the prototype loop.
+
+## Playtest goals
+
+- Camera stays readable in narrow corridors.
+- Guard can spot, chase, lose, and reset around blockers.
+- Torch makes navigation easier but increases detection risk.
+- Attack / block-parry / dodge feel fair from the shoulder view.
 
 ## Notes
 
-- The guard sight cone is intentionally visible for tuning.
-- The current remapping architecture is code-driven; no remap UI yet.
-- All art is generated with simple shapes so the slice stays lightweight.
+- The art remains primitive on purpose so the milestone can focus on movement, stealth, and camera feel.
+- The current implementation is still intentionally compact; follow-up work should split scene, AI, and combat systems into modules.
