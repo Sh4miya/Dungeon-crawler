@@ -269,6 +269,7 @@ class DungeonCrawlerApp {
       this.setMessage(this.player.torchOn ? 'Torch lit. Better visibility, louder silhouette.' : 'Torch lowered. Harder to see, harder to spot.');
     }
   };
+}
 class DungeonCrawlerScene extends Phaser.Scene {
   private controls!: ControlManager;
   private walls!: Phaser.Physics.Arcade.StaticGroup;
