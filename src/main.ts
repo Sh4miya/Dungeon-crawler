@@ -199,12 +199,17 @@ class DungeonCrawlerScene extends Phaser.Scene {
   private guardSpawn = new Phaser.Math.Vector2(700, 300);
   private guardPatrolIndex = 0;
   private readonly patrolPoints = [
-    new Phaser.Math.Vector2(650, 300),
     new Phaser.Math.Vector2(700, 300),
-    new Phaser.Math.Vector2(700, 190),
-    new Phaser.Math.Vector2(750, 190),
-    new Phaser.Math.Vector2(700, 190),
+    new Phaser.Math.Vector2(700, 192),
+    new Phaser.Math.Vector2(750, 192),
+    new Phaser.Math.Vector2(700, 192),
     new Phaser.Math.Vector2(700, 300),
+    new Phaser.Math.Vector2(700, 520),
+    new Phaser.Math.Vector2(80, 520),
+    new Phaser.Math.Vector2(80, 120),
+    new Phaser.Math.Vector2(860, 120),
+    new Phaser.Math.Vector2(860, 520),
+    new Phaser.Math.Vector2(700, 520),
   ];
   private wallRects: Phaser.Geom.Rectangle[] = [];
   private hasKey = false;
