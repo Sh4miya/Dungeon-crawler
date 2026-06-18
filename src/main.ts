@@ -1,6 +1,7 @@
 import './style.css';
 import * as THREE from 'three';
 import { findGuardPath, hasClearPath, type Rect as NavigationRect } from './guardNavigation';
+import { moveCircle, type Rect as CollisionRect } from './physics';
 
 type PlayerState = 'idle' | 'attack' | 'block' | 'dodge';
 type GuardState = 'patrol' | 'suspicious' | 'chase' | 'return' | 'stunned';
@@ -831,8 +832,7 @@ class DungeonCrawlerApp {
     this.player.health -= 1;
     this.player.damageCooldown = 1;
     const knockback = guardToPlayer.multiplyScalar(2.3);
-    this.player.pos.add(knockback);
-    this.player.pos.y = PLAYER_HEIGHT * 0.5;
+    this.moveBody(this.player.pos, knockback, PLAYER_RADIUS, 1);
     this.setMessage(`Oof. Health at ${Math.max(this.player.health, 0)}.`);
   }
 
@@ -1029,54 +1029,25 @@ class DungeonCrawlerApp {
   }
 
   private moveBody(position: THREE.Vector3, velocity: THREE.Vector3, radius: number, delta: number): void {
-    position.x += velocity.x * delta;
-    this.resolveCollisions(position, radius, 'x');
-    position.z += velocity.z * delta;
-    this.resolveCollisions(position, radius, 'z');
+    const next = moveCircle(position, velocity, radius, delta, this.getCollisionRects());
+    position.x = next.x;
+    position.z = next.z;
     position.y = PLAYER_HEIGHT * 0.5;
   }
 
-  private resolveCollisions(position: THREE.Vector3, radius: number, axis: 'x' | 'z'): void {
-    for (const wall of this.walls) {
-      const closestX = THREE.MathUtils.clamp(position.x, wall.minX, wall.maxX);
-      const closestZ = THREE.MathUtils.clamp(position.z, wall.minZ, wall.maxZ);
-      const dx = position.x - closestX;
-      const dz = position.z - closestZ;
-      const distanceSq = dx * dx + dz * dz;
+  private getCollisionRects(): CollisionRect[] {
+    const walls = this.walls.map<CollisionRect>((wall) => ({
+      minX: wall.minX,
+      maxX: wall.maxX,
+      minZ: wall.minZ,
+      maxZ: wall.maxZ,
+    }));
 
-      if (distanceSq >= radius * radius || distanceSq === 0) {
-        continue;
-      }
-
-      const distance = Math.sqrt(distanceSq);
-      const overlap = radius - distance;
-      if (axis === 'x') {
-        position.x += (dx / distance) * overlap;
-      } else {
-        position.z += (dz / distance) * overlap;
-      }
+    if (this.door.locked) {
+      walls.push(this.doorCollisionRect);
     }
 
-    if (!this.door.locked) {
-      return;
-    }
-
-    const closestX = THREE.MathUtils.clamp(position.x, this.doorCollisionRect.minX, this.doorCollisionRect.maxX);
-    const closestZ = THREE.MathUtils.clamp(position.z, this.doorCollisionRect.minZ, this.doorCollisionRect.maxZ);
-    const dx = position.x - closestX;
-    const dz = position.z - closestZ;
-    const distanceSq = dx * dx + dz * dz;
-    if (distanceSq >= radius * radius || distanceSq === 0) {
-      return;
-    }
-
-    const distance = Math.sqrt(distanceSq);
-    const overlap = radius - distance;
-    if (axis === 'x') {
-      position.x += (dx / distance) * overlap;
-    } else {
-      position.z += (dz / distance) * overlap;
-    }
+    return walls;
   }
 
   private isInsideRect(x: number, z: number, rect: { minX: number; maxX: number; minZ: number; maxZ: number }): boolean {
