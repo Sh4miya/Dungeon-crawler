@@ -12,7 +12,6 @@ Small browser vertical slice for the prison wing milestone, now rebuilt as an **
 - Space dodge with cooldown and brief invulnerability
 - Toggle torch on `Q` for visibility-vs-detection risk
 - One guard with patrol, suspicious, chase, stun, and reset behavior
-- One released hound with idle/released/search/chase/attack/reset behavior
 - One key + one locked archive door
 - `E` or `F` interaction prompt flow
 - HUD for health, guard alert, key state, dodge cooldown, and torch state

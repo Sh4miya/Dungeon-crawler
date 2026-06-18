@@ -1,1316 +1,1104 @@
-import * as Phaser from 'phaser';
 import './style.css';
-import { BALANCE } from './gameBalance';
-import { SoundCueManager } from './soundCueManager';
+import * as THREE from 'three';
+import { findGuardPath, hasClearPath, type Rect as NavigationRect } from './guardNavigation';
+import { moveCircle, type Rect as CollisionRect } from './physics';
 
-const GAME_WIDTH = BALANCE.world.width;
-const GAME_HEIGHT = BALANCE.world.height;
-const WALL_THICKNESS = BALANCE.world.wallThickness;
-const GUARD_VIEW_ANGLE = Phaser.Math.DegToRad(BALANCE.guard.viewAngleDeg);
-const HOUND_VIEW_ANGLE = Phaser.Math.DegToRad(BALANCE.hound.viewAngleDeg);
+type PlayerState = 'idle' | 'attack' | 'block' | 'dodge';
+type GuardState = 'patrol' | 'suspicious' | 'chase' | 'return' | 'stunned';
 
-type ActionName =
-  | 'moveUp'
-  | 'moveDown'
-  | 'moveLeft'
-  | 'moveRight'
-  | 'attack'
-  | 'block'
-  | 'dodge'
-  | 'interact'
-  | 'toggleTorch';
-
-type Binding =
-  | { type: 'keyboard'; code: string }
-  | { type: 'pointer'; button: 0 | 2 };
-
-type ControlsMap = Record<ActionName, Binding[]>;
-
-enum PlayerState {
-  Idle = 'idle',
-  Attack = 'attack',
-  Block = 'block',
-  Dodge = 'dodge',
-}
-
-enum GuardState {
-  Patrol = 'patrol',
-  Suspicious = 'suspicious',
-  Chase = 'chase',
-  Return = 'return',
-  Stunned = 'stunned',
-}
-
-enum HoundState {
-  Idle = 'idle',
-  Released = 'released',
-  Search = 'search',
-  Chase = 'chase',
-  Attack = 'attack',
-  Reset = 'reset',
-}
-
-const DEFAULT_BINDINGS: ControlsMap = {
-  moveUp: [
-    { type: 'keyboard', code: 'W' },
-    { type: 'keyboard', code: 'UP' },
-  ],
-  moveDown: [
-    { type: 'keyboard', code: 'S' },
-    { type: 'keyboard', code: 'DOWN' },
-  ],
-  moveLeft: [
-    { type: 'keyboard', code: 'A' },
-    { type: 'keyboard', code: 'LEFT' },
-  ],
-  moveRight: [
-    { type: 'keyboard', code: 'D' },
-    { type: 'keyboard', code: 'RIGHT' },
-  ],
-  attack: [{ type: 'pointer', button: 0 }],
-  block: [{ type: 'pointer', button: 2 }],
-  dodge: [{ type: 'keyboard', code: 'SPACE' }],
-  interact: [
-    { type: 'keyboard', code: 'E' },
-    { type: 'keyboard', code: 'F' },
-  ],
-  toggleTorch: [
-    { type: 'keyboard', code: 'Q' },
-    { type: 'keyboard', code: 'T' },
-  ],
+type WallRect = {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  height: number;
+  mesh: THREE.Mesh;
 };
 
-class ControlManager {
-  private readonly scene: Phaser.Scene;
-  private readonly keys = new Map<string, Phaser.Input.Keyboard.Key>();
-  private bindings: ControlsMap;
-  private pointerDown = { 0: false, 2: false };
-  private previousPointerDown = { 0: false, 2: false };
+type UiRefs = {
+  hud: HTMLDivElement;
+  status: HTMLDivElement;
+  message: HTMLDivElement;
+  objective: HTMLDivElement;
+  prompt: HTMLDivElement;
+  controls: HTMLDivElement;
+  crosshair: HTMLDivElement;
+};
 
-  constructor(scene: Phaser.Scene, bindings: ControlsMap) {
-    this.scene = scene;
-    this.bindings = structuredClone(bindings);
+const WORLD_WIDTH = 36;
+const WORLD_DEPTH = 24;
+const PLAYER_RADIUS = 0.42;
+const GUARD_RADIUS = 0.42;
+const PLAYER_HEIGHT = 1.72;
+const PLAYER_MOVE_SPEED = 4.2;
+const PLAYER_DODGE_SPEED = 9.2;
+const PLAYER_DODGE_DURATION = 0.2;
+const PLAYER_DODGE_COOLDOWN = 0.95;
+const PLAYER_ATTACK_DURATION = 0.22;
+const PLAYER_ATTACK_COOLDOWN = 0.32;
+const PLAYER_MAX_HEALTH = 5;
+const PLAYER_PARRY_WINDOW = 0.18;
+const GUARD_PATROL_SPEED = 2.1;
+const GUARD_SUSPICIOUS_SPEED = 2.7;
+const GUARD_CHASE_SPEED = 3.7;
+const GUARD_RETURN_SPEED = 2.4;
+const GUARD_SIGHT_DISTANCE = 8.5;
+const GUARD_SIGHT_DISTANCE_TORCH = 13.5;
+const GUARD_CHASE_DISTANCE = 5.5;
+const GUARD_NEAR_DETECTION = 1.8;
+const GUARD_FOV = THREE.MathUtils.degToRad(82);
+const GUARD_STUN_SECONDS = 3.2;
+const CAMERA_DISTANCE = 2.35;
+const CAMERA_SHOULDER_OFFSET = 0.42;
+const CAMERA_HEIGHT = 1.68;
+const CAMERA_MIN_DISTANCE = 0.78;
+const TORCH_ON_INTENSITY = 2.8;
+const TORCH_OFF_INTENSITY = 0.85;
+const GUARD_NAV_STEP = 0.5;
 
-    const codes = new Set<string>();
-    Object.values(this.bindings).flat().forEach((binding) => {
-      if (binding.type === 'keyboard') {
-        codes.add(binding.code);
-      }
-    });
+class DungeonCrawlerApp {
+  private readonly container: HTMLElement;
+  private readonly scene = new THREE.Scene();
+  private readonly camera = new THREE.PerspectiveCamera(70, 1, 0.1, 100);
+  private readonly renderer = new THREE.WebGLRenderer({ antialias: true });
+  private readonly clock = new THREE.Clock();
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly ui: UiRefs;
+  private readonly pressedKeys = new Set<string>();
+  private readonly pointerButtons = { left: false, right: false };
+  private readonly previousButtons = { left: false, right: false };
+  private readonly walls: WallRect[] = [];
+  private readonly wallMeshes: THREE.Object3D[] = [];
+  private readonly guardWaypoints = [
+    new THREE.Vector3(28.2, 0, 16.1),
+    new THREE.Vector3(23.6, 0, 16.1),
+    new THREE.Vector3(23.6, 0, 11.5),
+    new THREE.Vector3(28.2, 0, 11.5),
+  ];
+  private readonly player = {
+    pos: new THREE.Vector3(4.5, PLAYER_HEIGHT * 0.5, 12),
+    velocity: new THREE.Vector3(),
+    facing: new THREE.Vector3(0, 0, -1),
+    mesh: new THREE.Group(),
+    body: new THREE.Mesh(),
+    state: 'idle' as PlayerState,
+    stateTimer: 0,
+    attackCooldown: 0,
+    dodgeCooldown: 0,
+    damageCooldown: 0,
+    blockTimer: 0,
+    health: PLAYER_MAX_HEALTH,
+    hasKey: false,
+    torchOn: false,
+    missionComplete: false,
+  };
+  private readonly guard = {
+    pos: new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1),
+    velocity: new THREE.Vector3(),
+    facing: new THREE.Vector3(0, 0, -1),
+    mesh: new THREE.Group(),
+    body: new THREE.Mesh(),
+    state: 'patrol' as GuardState,
+    stateTimer: 0,
+    patrolIndex: 0,
+    lastSeen: new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1),
+    lastPatrolPos: new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1),
+    stalledFor: 0,
+  };
+  private readonly key = {
+    pos: new THREE.Vector3(29, 0.55, 8.5),
+    mesh: new THREE.Mesh(),
+    active: true,
+  };
+  private readonly door = {
+    pos: new THREE.Vector3(18.2, 1.1, 12),
+    mesh: new THREE.Group(),
+    locked: true,
+  };
+  private readonly exitZone = {
+    minX: 11.4,
+    maxX: 15.8,
+    minZ: 10,
+    maxZ: 14,
+  };
+  private readonly minimap = {
+    mesh: new THREE.Mesh(),
+  };
+  private readonly torchLight = new THREE.SpotLight(0xf7d089, TORCH_OFF_INTENSITY, 16, Math.PI / 7, 0.55, 1.2);
+  private readonly fillLight = new THREE.PointLight(0xa6d7ff, 0.75, 5.5, 2);
+  private readonly doorLight = new THREE.PointLight(0xffd27a, 1.1, 5.2, 2);
+  private readonly keyLight = new THREE.PointLight(0xffd27a, 1.4, 4.8, 2);
+  private readonly ambientLight = new THREE.AmbientLight(0x111726, 0.24);
+  private readonly guardSightMaterial = new THREE.MeshBasicMaterial({
+    color: 0xeac76a,
+    transparent: true,
+    opacity: 0.16,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  private readonly guardSightMesh = new THREE.Mesh();
+  private readonly torchTarget = new THREE.Object3D();
+  private readonly interactTip = new THREE.Vector3();
+  private readonly tmpVecA = new THREE.Vector3();
+  private readonly tmpVecB = new THREE.Vector3();
+  private readonly tmpVecC = new THREE.Vector3();
+  private readonly spawnPoint = new THREE.Vector3(4.5, PLAYER_HEIGHT * 0.5, 12);
+  private readonly guardSpawn = new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1);
+  private readonly guardPathTarget = new THREE.Vector3();
+  private readonly doorCollisionRect = { minX: 17.92, maxX: 18.48, minZ: 10.92, maxZ: 13.08 };
 
-    if (!this.scene.input.keyboard) {
-      throw new Error('Keyboard input is unavailable.');
-    }
+  private guardPath: Array<{ x: number; z: number }> = [];
+  private guardRepathTimer = 0;
 
-    codes.forEach((code) => {
-      this.keys.set(code, this.scene.input.keyboard!.addKey(code));
-    });
-  }
+  private yaw = Math.PI;
+  private pitch = -0.2;
+  private message = 'Scout report: find the brass key, then crack open the archive door.';
+  private messageTimer = 4;
 
-  updatePointerState(): void {
-    const pointer = this.scene.input.activePointer;
-    this.pointerDown = {
-      0: pointer.leftButtonDown(),
-      2: pointer.rightButtonDown(),
-    };
-  }
-
-  finalizeFrame(): void {
-    this.previousPointerDown = { ...this.pointerDown };
-  }
-
-  isDown(action: ActionName): boolean {
-    return this.bindings[action].some((binding) => {
-      if (binding.type === 'pointer') {
-        return this.pointerDown[binding.button];
-      }
-
-      return this.keys.get(binding.code)?.isDown ?? false;
-    });
-  }
-
-  justPressed(action: ActionName): boolean {
-    return this.bindings[action].some((binding) => {
-      if (binding.type === 'pointer') {
-        return this.pointerDown[binding.button] && !this.previousPointerDown[binding.button];
-      }
-
-      const key = this.keys.get(binding.code);
-      return key ? Phaser.Input.Keyboard.JustDown(key) : false;
-    });
-  }
-
-  summary(): string {
-    const toLabel = (binding: Binding): string => {
-      if (binding.type === 'pointer') {
-        return binding.button === 0 ? 'LMB' : 'RMB';
-      }
-
-      return binding.code === 'SPACE' ? 'Space' : binding.code;
-    };
-
-    return [
-      `Move ${this.bindings.moveUp.map(toLabel).join('/')} ${this.bindings.moveLeft.map(toLabel).join('/')} ${this.bindings.moveDown.map(toLabel).join('/')} ${this.bindings.moveRight.map(toLabel).join('/')}`,
-      `Attack ${this.bindings.attack.map(toLabel).join('/')}`,
-      `Block ${this.bindings.block.map(toLabel).join('/')}`,
-      `Dodge ${this.bindings.dodge.map(toLabel).join('/')}`,
-      `Interact ${this.bindings.interact.map(toLabel).join('/')}`,
-      `Torch ${this.bindings.toggleTorch.map(toLabel).join('/')}`,
-    ].join(' • ');
-  }
-}
-
-class DungeonCrawlerScene extends Phaser.Scene {
-  private controls!: ControlManager;
-  private soundCues!: SoundCueManager;
-  private walls!: Phaser.Physics.Arcade.StaticGroup;
-  private player!: Phaser.Physics.Arcade.Sprite;
-  private guard!: Phaser.Physics.Arcade.Sprite;
-  private hound!: Phaser.Physics.Arcade.Sprite;
-  private keyPickup?: Phaser.Physics.Arcade.Sprite;
-  private torchPickup?: Phaser.Physics.Arcade.Sprite;
-  private lockedDoor!: Phaser.Physics.Arcade.Sprite;
-  private lockedDoorCollider?: Phaser.Physics.Arcade.Collider;
-  private objectiveZone!: Phaser.GameObjects.Zone;
-  private playerLight!: Phaser.GameObjects.Light;
-  private torchPickupLight?: Phaser.GameObjects.Light;
-  private houndWarningLight!: Phaser.GameObjects.Light;
-  private guardSightGraphics!: Phaser.GameObjects.Graphics;
-  private houndSightGraphics!: Phaser.GameObjects.Graphics;
-  private messageText!: Phaser.GameObjects.Text;
-  private hudText!: Phaser.GameObjects.Text;
-  private timerText!: Phaser.GameObjects.Text;
-  private statusText!: Phaser.GameObjects.Text;
-  private controlsText!: Phaser.GameObjects.Text;
-  private promptText!: Phaser.GameObjects.Text;
-  private objectiveText!: Phaser.GameObjects.Text;
-  private floorAccent!: Phaser.GameObjects.Graphics;
-  private playerState = PlayerState.Idle;
-  private playerStateEndsAt = 0;
-  private attackCooldownEndsAt = 0;
-  private dodgeCooldownEndsAt = 0;
-  private blockStartedAt = 0;
-  private playerFacing = new Phaser.Math.Vector2(1, 0);
-  private lastMoveDirection = new Phaser.Math.Vector2(1, 0);
-  private guardFacing = new Phaser.Math.Vector2(0, -1);
-  private houndFacing = new Phaser.Math.Vector2(-1, 0);
-  private guardState = GuardState.Patrol;
-  private guardStateUntil = 0;
-  private houndState = HoundState.Idle;
-  private houndStateUntil = 0;
-  private guardLastSeen = new Phaser.Math.Vector2(0, 0);
-  private houndLastSeen = new Phaser.Math.Vector2(0, 0);
-  private guardPatrolIndex = 0;
-  private wallRects: Phaser.Geom.Rectangle[] = [];
-  private hasKey = false;
-  private doorUnlocked = false;
-  private hasTorch = false;
-  private torchEquipped = false;
-  private playerHealth = BALANCE.player.maxHealth;
-  private playerDamageCooldownEndsAt = 0;
-  private missionComplete = false;
-  private currentPrompt = '';
-  private messageExpiresAt = 0;
-  private countdownRemainingMs = BALANCE.countdown.startMs;
-  private countdownWarningStage: 'none' | 'low' | 'critical' | 'released' = 'none';
-  private houndReleased = false;
-  private houndHealth = BALANCE.hound.maxHealth;
-  private guardNextFootstepAt = 0;
-  private houndNextGrowlAt = 0;
-  private houndNextBarkAt = 0;
-
-  private readonly playerSpawn = new Phaser.Math.Vector2(BALANCE.player.spawn.x, BALANCE.player.spawn.y);
-  private readonly guardSpawn = new Phaser.Math.Vector2(BALANCE.guard.spawn.x, BALANCE.guard.spawn.y);
-  private readonly houndSpawn = new Phaser.Math.Vector2(BALANCE.hound.spawn.x, BALANCE.hound.spawn.y);
-  private readonly houndReleaseTarget = new Phaser.Math.Vector2(
-    BALANCE.hound.releaseInvestigateTarget.x,
-    BALANCE.hound.releaseInvestigateTarget.y,
-  );
-  private readonly patrolPoints = BALANCE.guard.patrolPoints.map((point) => new Phaser.Math.Vector2(point.x, point.y));
-
-  constructor() {
-    super('dungeon-crawler');
-  }
-
-  preload(): void {
-    this.createTextures();
-  }
-
-  create(): void {
-    this.cameras.main.setBackgroundColor(BALANCE.world.backgroundColor);
-    this.input.mouse?.disableContextMenu();
-    this.controls = new ControlManager(this, DEFAULT_BINDINGS);
-    this.soundCues = new SoundCueManager(this);
-
-    this.physics.world.setBounds(0, 0, GAME_WIDTH, GAME_HEIGHT);
+  constructor(container: HTMLElement) {
+    this.container = container;
+    this.ui = this.createUi();
+    this.setupRenderer();
+    this.setupScene();
     this.createLevel();
     this.createActors();
-    this.createUi();
-    this.createCollisions();
-    this.setMessage('Scout report: key, torch, door — and keep the kennel clock under control.');
+    this.bindEvents();
+    this.onResize();
+    this.render();
   }
 
-  update(_time: number, delta: number): void {
-    const now = this.time.now;
-    this.controls.updatePointerState();
+  private setupRenderer(): void {
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.setClearColor(0x070910);
+    this.container.appendChild(this.renderer.domElement);
+  }
 
-    if (!this.missionComplete) {
-      this.updatePlayer(now, delta);
-      this.updateCountdown(delta);
-      this.updateInteractionPrompt();
-      this.updateGuard(now, delta);
-      this.updateHound(now);
-      this.checkObjective();
-    } else {
-      this.player.setVelocity(0, 0);
-      this.guard.setVelocity(0, 0);
-      if (this.isHoundActive()) {
-        this.hound.setVelocity(0, 0);
+  private setupScene(): void {
+    this.scene.fog = new THREE.Fog(0x070910, 8, 26);
+    this.scene.add(this.ambientLight);
+
+    const moon = new THREE.DirectionalLight(0x7f9ac8, 0.42);
+    moon.position.set(8, 14, 6);
+    moon.castShadow = true;
+    moon.shadow.mapSize.set(1024, 1024);
+    moon.shadow.camera.near = 1;
+    moon.shadow.camera.far = 40;
+    moon.shadow.camera.left = -16;
+    moon.shadow.camera.right = 16;
+    moon.shadow.camera.top = 16;
+    moon.shadow.camera.bottom = -16;
+    this.scene.add(moon);
+
+    this.torchLight.position.set(0, PLAYER_HEIGHT * 0.75, 0);
+    this.torchLight.castShadow = true;
+    this.torchLight.shadow.mapSize.set(1024, 1024);
+    this.torchLight.shadow.camera.near = 0.2;
+    this.torchLight.shadow.camera.far = 18;
+    this.torchTarget.position.set(0, PLAYER_HEIGHT * 0.68, -2);
+    this.scene.add(this.torchTarget);
+    this.scene.add(this.torchLight);
+    this.scene.add(this.torchLight.target);
+
+    this.fillLight.position.copy(this.player.pos).add(new THREE.Vector3(0, 0.6, 0));
+    this.scene.add(this.fillLight);
+
+    this.doorLight.position.copy(this.door.pos).add(new THREE.Vector3(0, 0.2, 0));
+    this.scene.add(this.doorLight);
+
+    this.keyLight.position.copy(this.key.pos).add(new THREE.Vector3(0, 0.3, 0));
+    this.scene.add(this.keyLight);
+  }
+
+  private createUi(): UiRefs {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+
+    const topLeft = document.createElement('div');
+    topLeft.className = 'panel top-left';
+    const hud = document.createElement('div');
+    const status = document.createElement('div');
+    const message = document.createElement('div');
+    message.className = 'message';
+    topLeft.append(hud, status, message);
+
+    const topRight = document.createElement('div');
+    topRight.className = 'panel top-right';
+    const objective = document.createElement('div');
+    topRight.append(objective);
+
+    const bottomLeft = document.createElement('div');
+    bottomLeft.className = 'panel bottom-left';
+    const prompt = document.createElement('div');
+    prompt.className = 'prompt';
+    const controls = document.createElement('div');
+    controls.className = 'controls';
+    bottomLeft.append(prompt, controls);
+
+    const centerHint = document.createElement('div');
+    centerHint.className = 'center-hint';
+    centerHint.textContent = 'Click to capture the mouse · WASD move · Mouse look · LMB attack · RMB block/parry · Space dodge · E interact · Q torch';
+
+    const crosshair = document.createElement('div');
+    crosshair.className = 'crosshair';
+
+    overlay.append(topLeft, topRight, bottomLeft, centerHint, crosshair);
+    this.container.appendChild(overlay);
+
+    return { hud, status, message, objective, prompt, controls, crosshair };
+  }
+
+  private bindEvents(): void {
+    window.addEventListener('resize', this.onResize);
+    window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', this.onKeyUp);
+    this.renderer.domElement.addEventListener('click', () => {
+      if (document.pointerLockElement !== this.renderer.domElement) {
+        this.renderer.domElement.requestPointerLock();
       }
-    }
-
-    this.updateLightsAndUi(now);
-    this.drawSightCones();
-    this.controls.finalizeFrame();
+    });
+    document.addEventListener('pointerlockchange', this.onPointerLockChange);
+    window.addEventListener('mousemove', this.onMouseMove);
+    window.addEventListener('mousedown', this.onMouseDown);
+    window.addEventListener('mouseup', this.onMouseUp);
+    window.addEventListener('contextmenu', (event) => event.preventDefault());
   }
 
-  private createTextures(): void {
-    const g = this.make.graphics({ x: 0, y: 0 });
+  private readonly onResize = (): void => {
+    const width = this.container.clientWidth;
+    const height = this.container.clientHeight;
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(width, height);
+  };
 
-    g.fillStyle(0xffffff, 1);
-    g.fillRect(0, 0, 16, 16);
-    g.generateTexture('pixel', 16, 16);
-    g.clear();
+  private readonly onPointerLockChange = (): void => {
+    this.ui.crosshair.classList.toggle('active', document.pointerLockElement === this.renderer.domElement);
+  };
 
-    g.fillStyle(0x26313b, 1);
-    g.fillRect(0, 0, 64, 64);
-    g.fillStyle(0x202833, 1);
-    for (let x = 0; x < 64; x += 16) {
-      g.fillRect(x, 0, 2, 64);
+  private readonly onKeyDown = (event: KeyboardEvent): void => {
+    this.pressedKeys.add(event.code);
+
+    if (event.code === 'KeyQ' && !event.repeat) {
+      this.player.torchOn = !this.player.torchOn;
+      this.setMessage(this.player.torchOn ? 'Torch lit. Better visibility, louder silhouette.' : 'Torch lowered. Harder to see, harder to spot.');
     }
-    for (let y = 0; y < 64; y += 16) {
-      g.fillRect(0, y, 64, 2);
+  };
+
+  private readonly onKeyUp = (event: KeyboardEvent): void => {
+    this.pressedKeys.delete(event.code);
+  };
+
+  private readonly onMouseMove = (event: MouseEvent): void => {
+    if (document.pointerLockElement !== this.renderer.domElement) {
+      return;
     }
-    g.fillStyle(0x394756, 0.4);
-    g.fillRect(10, 10, 12, 12);
-    g.fillRect(38, 24, 10, 10);
-    g.generateTexture('floor', 64, 64);
-    g.clear();
 
-    g.fillStyle(0x8ad1ff, 1);
-    g.fillCircle(12, 12, 12);
-    g.generateTexture('player', 24, 24);
-    g.clear();
+    this.yaw -= event.movementX * 0.0027;
+    this.pitch = THREE.MathUtils.clamp(this.pitch - event.movementY * 0.0018, -0.7, 0.35);
+  };
 
-    g.fillStyle(0xc93f5b, 1);
-    g.fillCircle(12, 12, 12);
-    g.generateTexture('guard', 24, 24);
-    g.clear();
+  private readonly onMouseDown = (event: MouseEvent): void => {
+    if (event.button === 0) {
+      this.pointerButtons.left = true;
+    }
+    if (event.button === 2) {
+      this.pointerButtons.right = true;
+    }
+  };
 
-    g.fillStyle(0xd84d54, 1);
-    g.fillTriangle(12, 0, 24, 12, 12, 24);
-    g.fillTriangle(12, 0, 0, 12, 12, 24);
-    g.fillStyle(0xf3d9cf, 1);
-    g.fillCircle(12, 13, 7);
-    g.generateTexture('hound', 24, 24);
-    g.clear();
-
-    g.fillStyle(0xf2cc6b, 1);
-    g.beginPath();
-    g.moveTo(12, 0);
-    g.lineTo(24, 12);
-    g.lineTo(12, 24);
-    g.lineTo(0, 12);
-    g.closePath();
-    g.fillPath();
-    g.generateTexture('key', 24, 24);
-    g.clear();
-
-    g.fillStyle(0xf6ab55, 1);
-    g.fillRect(9, 3, 6, 10);
-    g.fillStyle(0x7b4d20, 1);
-    g.fillRect(10, 13, 4, 11);
-    g.generateTexture('torch', 24, 24);
-    g.clear();
-
-    g.fillStyle(0x6e4f2c, 1);
-    g.fillRect(0, 0, 32, 64);
-    g.fillStyle(0xb18b46, 1);
-    g.fillRect(22, 28, 5, 8);
-    g.generateTexture('door', 32, 64);
-    g.destroy();
-  }
+  private readonly onMouseUp = (event: MouseEvent): void => {
+    if (event.button === 0) {
+      this.pointerButtons.left = false;
+    }
+    if (event.button === 2) {
+      this.pointerButtons.right = false;
+    }
+  };
 
   private createLevel(): void {
-    this.add.tileSprite(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 'floor');
-    this.floorAccent = this.add.graphics();
-    this.floorAccent.fillStyle(0x1c2330, 0.6);
-    this.floorAccent.fillRect(96, 96, 772, 56);
-    this.floorAccent.fillRect(96, 488, 772, 56);
-    this.floorAccent.fillStyle(0x161b26, 0.7);
-    this.floorAccent.fillRect(304, 144, 224, 352);
-    this.floorAccent.fillRect(600, 144, 200, 96);
-    this.floorAccent.fillStyle(0x38171d, 0.55);
-    this.floorAccent.fillRect(780, 64, 116, 88);
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(WORLD_WIDTH, WORLD_DEPTH),
+      new THREE.MeshStandardMaterial({ color: 0x1a2230, roughness: 0.92, metalness: 0.02 }),
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    floor.position.set(WORLD_WIDTH * 0.5, 0, WORLD_DEPTH * 0.5);
+    this.scene.add(floor);
 
-    this.walls = this.physics.add.staticGroup();
-    const addWall = (x: number, y: number, width: number, height: number): void => {
-      const wall = this.walls
-        .create(x, y, 'pixel')
-        .setOrigin(0, 0)
-        .setDisplaySize(width, height)
-        .setTint(0x66717f) as Phaser.Physics.Arcade.Sprite;
-      wall.refreshBody();
-      wall.setPipeline('Light2D');
-      this.wallRects.push(new Phaser.Geom.Rectangle(x, y, width, height));
+    const createStrip = (x: number, z: number, width: number, depth: number, color: number): void => {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(width, 0.02, depth),
+        new THREE.MeshStandardMaterial({ color, roughness: 1, metalness: 0 }),
+      );
+      mesh.position.set(x + width * 0.5, 0.01, z + depth * 0.5);
+      mesh.receiveShadow = true;
+      this.scene.add(mesh);
     };
 
-    addWall(0, 0, GAME_WIDTH, WALL_THICKNESS);
-    addWall(0, GAME_HEIGHT - WALL_THICKNESS, GAME_WIDTH, WALL_THICKNESS);
-    addWall(0, 0, WALL_THICKNESS, GAME_HEIGHT);
-    addWall(GAME_WIDTH - WALL_THICKNESS, 0, WALL_THICKNESS, GAME_HEIGHT);
+    createStrip(2.5, 2.2, 30.8, 1.2, 0x212b3d);
+    createStrip(2.5, 20.6, 30.8, 1.2, 0x212b3d);
+    createStrip(10.2, 6.2, 8.4, 11.8, 0x171d29);
+    createStrip(22.2, 6.2, 7.8, 3.4, 0x171d29);
 
-    addWall(304, 144, 224, 24);
-    addWall(304, 144, 24, 352);
-    addWall(304, 472, 224, 24);
-    addWall(504, 144, 24, 128);
-    addWall(504, 336, 24, 160);
+    const addWall = (x: number, z: number, width: number, depth: number, height = 2.8): void => {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(width, height, depth),
+        new THREE.MeshStandardMaterial({ color: 0x6b7789, roughness: 0.72, metalness: 0.08 }),
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.position.set(x + width * 0.5, height * 0.5, z + depth * 0.5);
+      this.scene.add(mesh);
+      const wallRect: WallRect = { minX: x, maxX: x + width, minZ: z, maxZ: z + depth, height, mesh };
+      this.walls.push(wallRect);
+      this.wallMeshes.push(mesh);
+    };
 
-    addWall(600, 144, 200, 24);
-    addWall(776, 144, 24, 120);
-    addWall(600, 240, 80, 24);
-    addWall(720, 240, 80, 24);
+    addWall(0, 0, WORLD_WIDTH, 1);
+    addWall(0, WORLD_DEPTH - 1, WORLD_WIDTH, 1);
+    addWall(0, 0, 1, WORLD_DEPTH);
+    addWall(WORLD_WIDTH - 1, 0, 1, WORLD_DEPTH);
 
-    addWall(176, 144, 24, 120);
-    addWall(176, 376, 24, 120);
-    addWall(176, 256, 144, 24);
-    addWall(176, 360, 144, 24);
-    addWall(104, 200, 72, 24);
-    addWall(104, 416, 72, 24);
+    addWall(10.2, 6.2, 8.4, 0.7);
+    addWall(10.2, 6.2, 0.7, 11.8);
+    addWall(10.2, 17.3, 8.4, 0.7);
+    addWall(17.9, 6.2, 0.7, 4.2);
+    addWall(17.9, 13.6, 0.7, 4.4);
 
-    this.lockedDoor = this.physics.add.sprite(516, 304, 'door').setImmovable(true).setTint(0x8e6d3d);
-    const doorBody = this.lockedDoor.body as Phaser.Physics.Arcade.Body;
-    doorBody.setAllowGravity(false);
-    this.lockedDoor.setPipeline('Light2D');
-    this.lockedDoor.setDepth(3);
+    addWall(22.2, 6.2, 7.8, 0.7);
+    addWall(29.3, 6.2, 0.7, 4.1);
+    addWall(22.2, 9.6, 3.2, 0.7);
+    addWall(26.8, 9.6, 3.2, 0.7);
 
-    this.keyPickup = this.physics.add.sprite(700, 192, 'key').setImmovable(true);
-    const keyBody = this.keyPickup.body as Phaser.Physics.Arcade.Body;
-    keyBody.setAllowGravity(false);
-    this.keyPickup.setPipeline('Light2D');
-    this.keyPickup.setDepth(3);
+    addWall(5.2, 6.2, 0.7, 4.2);
+    addWall(5.2, 13.7, 0.7, 4.3);
+    addWall(5.2, 10.2, 5.7, 0.7);
+    addWall(5.2, 13.3, 5.7, 0.7);
+    addWall(2.2, 8.1, 3, 0.7);
+    addWall(2.2, 15.2, 3, 0.7);
 
-    this.torchPickup = this.physics.add.sprite(BALANCE.torch.pickup.x, BALANCE.torch.pickup.y, 'torch').setImmovable(true);
-    const torchBody = this.torchPickup.body as Phaser.Physics.Arcade.Body;
-    torchBody.setAllowGravity(false);
-    this.torchPickup.setPipeline('Light2D');
-    this.torchPickup.setDepth(3);
+    const doorFrameMaterial = new THREE.MeshStandardMaterial({ color: 0x92847a, roughness: 0.9, metalness: 0.05 });
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.6, 2.8), doorFrameMaterial);
+    lintel.position.set(this.door.pos.x, 2.5, this.door.pos.z);
+    lintel.castShadow = true;
+    this.scene.add(lintel);
 
-    this.objectiveZone = this.add.zone(416, 320, 120, 120);
-    this.physics.add.existing(this.objectiveZone);
-    const objectiveBody = this.objectiveZone.body as Phaser.Physics.Arcade.Body;
-    objectiveBody.setAllowGravity(false);
-    objectiveBody.moves = false;
+    const frameLeft = new THREE.Mesh(new THREE.BoxGeometry(0.5, 2.4, 0.45), doorFrameMaterial);
+    frameLeft.position.set(this.door.pos.x, 1.2, this.door.pos.z - 1.18);
+    frameLeft.castShadow = true;
+    this.scene.add(frameLeft);
 
-    this.lights.enable().setAmbientColor(BALANCE.world.ambientColor);
-    this.lights.addLight(700, 192, 90, 0xf2cc6b, 1.2).setIntensity(1.2);
-    this.torchPickupLight = this.lights.addLight(BALANCE.torch.pickup.x, BALANCE.torch.pickup.y, 76, 0xffb454, 0.85);
-    this.houndWarningLight = this.lights.addLight(
-      this.houndSpawn.x,
-      this.houndSpawn.y,
-      BALANCE.hound.warningLightRadius,
-      0xff4d5c,
-      0.2,
+    const frameRight = frameLeft.clone();
+    frameRight.position.z = this.door.pos.z + 1.18;
+    this.scene.add(frameRight);
+
+    const exitMarker = new THREE.Mesh(
+      new THREE.PlaneGeometry(this.exitZone.maxX - this.exitZone.minX, this.exitZone.maxZ - this.exitZone.minZ),
+      new THREE.MeshBasicMaterial({ color: 0x6bd68e, transparent: true, opacity: 0.2 }),
     );
+    exitMarker.rotation.x = -Math.PI / 2;
+    exitMarker.position.set((this.exitZone.minX + this.exitZone.maxX) * 0.5, 0.03, (this.exitZone.minZ + this.exitZone.maxZ) * 0.5);
+    this.scene.add(exitMarker);
+  }
+
+  private createSightConeGeometry(radius: number, fov: number, segments = 40): THREE.ShapeGeometry {
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 0);
+
+    for (let index = 0; index <= segments; index += 1) {
+      const angle = -fov * 0.5 + (fov * index) / segments;
+      shape.lineTo(Math.sin(angle) * radius, Math.cos(angle) * radius);
+    }
+
+    shape.lineTo(0, 0);
+    return new THREE.ShapeGeometry(shape);
   }
 
   private createActors(): void {
-    this.player = this.physics.add.sprite(this.playerSpawn.x, this.playerSpawn.y, 'player');
-    this.player.setCircle(12, 0, 0);
-    this.player.setCollideWorldBounds(true);
-    this.player.setDamping(true);
-    this.player.setDrag(1400, 1400);
-    this.player.setDepth(4);
-    this.player.setPipeline('Light2D');
-
-    this.guard = this.physics.add.sprite(this.guardSpawn.x, this.guardSpawn.y, 'guard');
-    this.guard.setCircle(12, 0, 0);
-    this.guard.setCollideWorldBounds(true);
-    this.guard.setDepth(4);
-    this.guard.setPipeline('Light2D');
-
-    this.hound = this.physics.add.sprite(this.houndSpawn.x, this.houndSpawn.y, 'hound');
-    this.hound.setCircle(12, 0, 0);
-    this.hound.setCollideWorldBounds(true);
-    this.hound.setDepth(4);
-    this.hound.setPipeline('Light2D');
-    this.hound.disableBody(true, true);
-
-    this.playerLight = this.lights.addLight(
-      this.player.x,
-      this.player.y,
-      BALANCE.player.lightRadius,
-      0xe8f4ff,
-      BALANCE.player.lightIntensity,
+    this.player.mesh = new THREE.Group();
+    const playerBody = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.34, 0.9, 4, 8),
+      new THREE.MeshStandardMaterial({ color: 0x8fd9ff, emissive: 0x123e56, emissiveIntensity: 0.38 }),
     );
-    this.lights.addLight(516, 304, 72, 0xffcf80, 0.8);
+    playerBody.castShadow = true;
+    playerBody.position.y = 0.88;
+    this.player.mesh.add(playerBody);
+    this.player.body = playerBody;
+    this.player.mesh.position.copy(this.player.pos).setY(0);
+    this.scene.add(this.player.mesh);
+
+    this.guard.mesh = new THREE.Group();
+    const guardBody = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.34, 0.92, 4, 8),
+      new THREE.MeshStandardMaterial({ color: 0xce526a, emissive: 0x5d1622, emissiveIntensity: 0.26 }),
+    );
+    guardBody.castShadow = true;
+    guardBody.position.y = 0.9;
+    const helmet = new THREE.Mesh(
+      new THREE.SphereGeometry(0.24, 16, 16),
+      new THREE.MeshStandardMaterial({ color: 0xe8edf6, roughness: 0.7, metalness: 0.5 }),
+    );
+    helmet.position.y = 1.58;
+    helmet.castShadow = true;
+    this.guard.mesh.add(guardBody, helmet);
+    this.guard.body = guardBody;
+    this.guard.mesh.position.copy(this.guard.pos).setY(0);
+    this.scene.add(this.guard.mesh);
+
+    this.guardSightMesh.geometry = this.createSightConeGeometry(1, GUARD_FOV);
+    this.guardSightMesh.material = this.guardSightMaterial;
+    this.guardSightMesh.rotation.x = -Math.PI / 2;
+    this.guardSightMesh.position.set(this.guard.pos.x, 0.04, this.guard.pos.z);
+    this.guardSightMesh.renderOrder = 1;
+    this.scene.add(this.guardSightMesh);
+
+    this.key.mesh = new THREE.Mesh(
+      new THREE.TorusKnotGeometry(0.12, 0.04, 48, 8, 2, 3),
+      new THREE.MeshStandardMaterial({ color: 0xf2cc6b, emissive: 0xa67115, emissiveIntensity: 0.55, metalness: 0.6, roughness: 0.35 }),
+    );
+    this.key.mesh.castShadow = true;
+    this.key.mesh.position.copy(this.key.pos);
+    this.scene.add(this.key.mesh);
+
+    const doorPanel = new THREE.Mesh(
+      new THREE.BoxGeometry(0.32, 2.15, 2.2),
+      new THREE.MeshStandardMaterial({ color: 0x6f4f30, roughness: 0.82, metalness: 0.04 }),
+    );
+    doorPanel.castShadow = true;
+    const handle = new THREE.Mesh(
+      new THREE.SphereGeometry(0.08, 12, 12),
+      new THREE.MeshStandardMaterial({ color: 0xcba24b, metalness: 0.8, roughness: 0.25 }),
+    );
+    handle.position.set(0.2, 0, 0.65);
+    doorPanel.add(handle);
+    this.door.mesh = new THREE.Group();
+    this.door.mesh.add(doorPanel);
+    this.door.mesh.position.copy(this.door.pos);
+    this.scene.add(this.door.mesh);
   }
 
-  private createUi(): void {
-    const makeText = (
-      x: number,
-      y: number,
-      size: string,
-      color = '#f7f5e8',
-      wordWrapWidth?: number,
-    ): Phaser.GameObjects.Text =>
-      this.add
-        .text(x, y, '', {
-          fontFamily: 'monospace',
-          fontSize: size,
-          color,
-          stroke: '#090a11',
-          strokeThickness: 4,
-          wordWrap: wordWrapWidth ? { width: wordWrapWidth, useAdvancedWrap: true } : undefined,
-        })
-        .setScrollFactor(0)
-        .setDepth(20);
+  private render = (): void => {
+    const delta = Math.min(this.clock.getDelta(), 0.033);
+    this.update(delta);
+    this.renderer.render(this.scene, this.camera);
+    requestAnimationFrame(this.render);
+  };
 
-    this.hudText = makeText(18, 16, '18px');
-    this.timerText = makeText(942, 16, '22px', '#ffd479').setOrigin(1, 0);
-    this.statusText = makeText(18, 44, '16px', '#cdd6e1', 924);
-    this.controlsText = makeText(18, 584, '14px', '#cdd6e1', 924);
-    this.controlsText.setText(`Scout kit: ${this.controls.summary()}`);
-    this.messageText = makeText(18, 72, '16px', '#f2cc6b', 924);
-    this.promptText = makeText(18, 542, '16px', '#8fe3ff', 924);
-    this.objectiveText = makeText(942, 48, '16px', '#ffd479', 320).setOrigin(1, 0);
-    this.guardSightGraphics = this.add.graphics().setDepth(2);
-    this.houndSightGraphics = this.add.graphics().setDepth(2);
+  private update(delta: number): void {
+    this.messageTimer = Math.max(0, this.messageTimer - delta);
+    this.updatePlayer(delta);
+    this.updateGuard(delta);
+    this.updateWorldActors(delta);
+    this.updateCamera();
+    this.updateUi();
+    this.previousButtons.left = this.pointerButtons.left;
+    this.previousButtons.right = this.pointerButtons.right;
   }
 
-  private createCollisions(): void {
-    this.physics.add.collider(this.player, this.walls);
-    this.physics.add.collider(this.guard, this.walls);
-    this.physics.add.collider(this.hound, this.walls);
-    this.lockedDoorCollider = this.physics.add.collider(this.player, this.lockedDoor);
-    this.physics.add.collider(this.guard, this.lockedDoor);
-    this.physics.add.collider(this.hound, this.lockedDoor);
-    this.physics.add.overlap(this.player, this.guard, () => this.handleGuardContact());
-    this.physics.add.overlap(this.player, this.hound, () => this.handleHoundContact());
-  }
-
-  private updatePlayer(now: number, delta: number): void {
-    if (now >= this.playerStateEndsAt && this.playerState !== PlayerState.Block) {
-      this.playerState = PlayerState.Idle;
+  private updatePlayer(delta: number): void {
+    if (this.player.missionComplete) {
+      this.player.velocity.set(0, 0, 0);
+      return;
     }
 
-    const pointer = this.input.activePointer;
-    const aim = new Phaser.Math.Vector2(pointer.worldX - this.player.x, pointer.worldY - this.player.y);
-    if (aim.lengthSq() > 16) {
-      aim.normalize();
-      this.playerFacing.copy(aim);
+    this.player.attackCooldown = Math.max(0, this.player.attackCooldown - delta);
+    this.player.dodgeCooldown = Math.max(0, this.player.dodgeCooldown - delta);
+    this.player.damageCooldown = Math.max(0, this.player.damageCooldown - delta);
+    this.player.blockTimer = Math.max(0, this.player.blockTimer - delta);
+    this.player.stateTimer = Math.max(0, this.player.stateTimer - delta);
+
+    const cameraForward = this.camera.getWorldDirection(new THREE.Vector3());
+    cameraForward.y = 0;
+    if (cameraForward.lengthSq() < 0.0001) {
+      cameraForward.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    }
+    cameraForward.normalize();
+    const cameraRight = new THREE.Vector3().crossVectors(cameraForward, new THREE.Vector3(0, 1, 0)).normalize();
+
+    const moveInput = new THREE.Vector3();
+    if (this.pressedKeys.has('KeyW') || this.pressedKeys.has('ArrowUp')) moveInput.add(cameraForward);
+    if (this.pressedKeys.has('KeyS') || this.pressedKeys.has('ArrowDown')) moveInput.sub(cameraForward);
+    if (this.pressedKeys.has('KeyD') || this.pressedKeys.has('ArrowRight')) moveInput.add(cameraRight);
+    if (this.pressedKeys.has('KeyA') || this.pressedKeys.has('ArrowLeft')) moveInput.sub(cameraRight);
+    moveInput.y = 0;
+    if (moveInput.lengthSq() > 0) {
+      moveInput.normalize();
+      this.player.facing.copy(moveInput);
+    } else {
+      this.player.facing.copy(cameraForward);
     }
 
-    if (this.controls.justPressed('toggleTorch')) {
-      this.toggleTorch();
-    }
+    const justAttack = this.pointerButtons.left && !this.previousButtons.left;
+    const justDodge = this.pressedKeys.has('Space') && this.player.dodgeCooldown === 0 && this.player.state !== 'dodge';
+    const interactPressed = this.pressedKeys.has('KeyE') || this.pressedKeys.has('KeyF');
 
-    const moveX = Number(this.controls.isDown('moveRight')) - Number(this.controls.isDown('moveLeft'));
-    const moveY = Number(this.controls.isDown('moveDown')) - Number(this.controls.isDown('moveUp'));
-    const move = new Phaser.Math.Vector2(moveX, moveY);
-    if (move.lengthSq() > 0) {
-      move.normalize();
-      this.lastMoveDirection.copy(move);
-      if (this.playerState !== PlayerState.Block) {
-        this.playerFacing.copy(move);
-      }
-    }
-
-    if (this.controls.justPressed('attack') && now >= this.attackCooldownEndsAt && this.playerState !== PlayerState.Dodge) {
-      this.playerState = PlayerState.Attack;
-      this.playerStateEndsAt = now + BALANCE.player.attackDurationMs;
-      this.attackCooldownEndsAt = now + BALANCE.player.attackCooldownMs;
+    if (justAttack && this.player.attackCooldown === 0 && this.player.state !== 'dodge') {
+      this.player.state = 'attack';
+      this.player.stateTimer = PLAYER_ATTACK_DURATION;
+      this.player.attackCooldown = PLAYER_ATTACK_COOLDOWN;
       this.resolveAttack();
     }
 
-    if (this.controls.justPressed('dodge') && now >= this.dodgeCooldownEndsAt) {
-      this.playerState = PlayerState.Dodge;
-      this.playerStateEndsAt = now + BALANCE.player.dodgeDurationMs;
-      this.dodgeCooldownEndsAt = now + BALANCE.player.dodgeCooldownMs;
-      const dodgeDirection = move.lengthSq() > 0 ? move.clone() : this.playerFacing.clone();
-      dodgeDirection.normalize();
-      this.player.setVelocity(dodgeDirection.x * BALANCE.player.dodgeSpeed, dodgeDirection.y * BALANCE.player.dodgeSpeed);
-      this.player.setTint(0xb7f8ff);
+    if (justDodge && this.player.dodgeCooldown === 0) {
+      const dodgeDirection = moveInput.lengthSq() > 0 ? moveInput.clone() : this.player.facing.clone();
+      this.player.state = 'dodge';
+      this.player.stateTimer = PLAYER_DODGE_DURATION;
+      this.player.dodgeCooldown = PLAYER_DODGE_COOLDOWN;
+      this.player.velocity.copy(dodgeDirection.normalize().multiplyScalar(PLAYER_DODGE_SPEED));
       this.setMessage('Zip! Dodge window active.');
+      this.pressedKeys.delete('Space');
     }
 
-    if (this.controls.isDown('block') && this.playerState !== PlayerState.Dodge) {
-      if (this.playerState !== PlayerState.Block) {
-        this.blockStartedAt = now;
+    if (this.pointerButtons.right && this.player.state !== 'dodge') {
+      if (this.player.state !== 'block') {
+        this.player.blockTimer = PLAYER_PARRY_WINDOW;
       }
-      this.playerState = PlayerState.Block;
-      this.playerStateEndsAt = now + 16;
-    } else if (this.playerState === PlayerState.Block) {
-      this.playerState = PlayerState.Idle;
+      this.player.state = 'block';
+      this.player.stateTimer = 0.05;
+    } else if (this.player.state === 'block') {
+      this.player.state = 'idle';
     }
 
-    if (this.playerState === PlayerState.Dodge) {
-      if (now >= this.playerStateEndsAt) {
-        this.playerState = PlayerState.Idle;
-        this.player.clearTint();
+    if (this.player.state === 'dodge') {
+      this.moveBody(this.player.pos, this.player.velocity, PLAYER_RADIUS, delta);
+      if (this.player.stateTimer === 0) {
+        this.player.state = 'idle';
+        this.player.velocity.set(0, 0, 0);
       }
-      return;
-    }
-
-    this.player.clearTint();
-    const speedMultiplier = this.playerState === PlayerState.Attack ? 0.4 : this.playerState === PlayerState.Block ? 0.52 : 1;
-    const speed = BALANCE.player.baseSpeed * speedMultiplier;
-    this.player.setVelocity(move.x * speed, move.y * speed);
-
-    if (this.controls.justPressed('interact')) {
-      this.handleInteraction();
-    }
-
-    const playerBody = this.player.body as Phaser.Physics.Arcade.Body;
-    if (delta > 0 && playerBody.velocity.lengthSq() < 4) {
-      this.player.setVelocity(0, 0);
-    }
-  }
-
-  private updateCountdown(delta: number): void {
-    if (this.houndReleased || this.missionComplete) {
-      return;
-    }
-
-    const drainMultiplier = this.torchEquipped ? BALANCE.torch.countdownDrainMultiplier : 1;
-    this.countdownRemainingMs = Math.max(0, this.countdownRemainingMs - delta * drainMultiplier);
-
-    if (this.countdownWarningStage === 'none' && this.countdownRemainingMs <= BALANCE.countdown.lowWarningMs) {
-      this.countdownWarningStage = 'low';
-      this.soundCues.play('alertTrigger');
-      this.setMessage('Kennel chain rattling. Light buys sight, but time is slipping.');
-    }
-
-    if (this.countdownWarningStage !== 'critical' && this.countdownRemainingMs <= BALANCE.countdown.criticalWarningMs) {
-      this.countdownWarningStage = 'critical';
-      this.soundCues.play('alertTrigger');
-      this.cameras.main.flash(160, 255, 110, 110, false);
-      this.setMessage('Critical pressure. The hound is almost loose.');
-    }
-
-    if (this.countdownRemainingMs <= 0) {
-      this.releaseHound();
-    }
-  }
-
-  private updateGuard(now: number, delta: number): void {
-    const sight = this.getGuardSight();
-    if (this.guardState !== GuardState.Stunned) {
-      if (sight.seesPlayer && sight.distance <= BALANCE.guard.chaseDistance) {
-        this.setGuardState(GuardState.Chase, now, BALANCE.guard.chaseMemoryMs);
-        this.guardLastSeen.set(this.player.x, this.player.y);
-      } else if (sight.seesPlayer) {
-        if (this.guardState !== GuardState.Chase) {
-          this.setGuardState(GuardState.Suspicious, now, BALANCE.guard.suspiciousDurationMs);
-        } else {
-          this.guardStateUntil = now + BALANCE.guard.chaseMemoryMs;
-        }
-        this.guardLastSeen.set(this.player.x, this.player.y);
-      } else if (this.guardState === GuardState.Chase && now >= this.guardStateUntil) {
-        this.setGuardState(GuardState.Return, now);
-      }
-    }
-
-    switch (this.guardState) {
-      case GuardState.Patrol: {
-        const target = this.patrolPoints[this.guardPatrolIndex];
-        this.moveActorTowards(this.guard, target, BALANCE.guard.patrolSpeed);
-        if (Phaser.Math.Distance.Between(this.guard.x, this.guard.y, target.x, target.y) < 10) {
-          this.guardPatrolIndex = (this.guardPatrolIndex + 1) % this.patrolPoints.length;
-        }
-        break;
-      }
-      case GuardState.Suspicious: {
-        this.moveActorTowards(this.guard, this.guardLastSeen, BALANCE.guard.suspiciousSpeed);
-        if (Phaser.Math.Distance.Between(this.guard.x, this.guard.y, this.guardLastSeen.x, this.guardLastSeen.y) < BALANCE.guard.alertDistanceTolerance) {
-          this.guard.setVelocity(0, 0);
-        }
-        if (now >= this.guardStateUntil) {
-          this.setGuardState(GuardState.Return, now);
-        }
-        break;
-      }
-      case GuardState.Chase: {
-        this.guardLastSeen.set(this.player.x, this.player.y);
-        this.guardStateUntil = sight.seesPlayer ? now + BALANCE.guard.chaseMemoryMs : this.guardStateUntil;
-        this.moveActorTowards(this.guard, this.guardLastSeen, BALANCE.guard.chaseSpeed);
-        break;
-      }
-      case GuardState.Return: {
-        const target = this.patrolPoints[this.guardPatrolIndex];
-        this.moveActorTowards(this.guard, target, BALANCE.guard.returnSpeed);
-        if (Phaser.Math.Distance.Between(this.guard.x, this.guard.y, target.x, target.y) < BALANCE.guard.returnTolerance) {
-          this.setGuardState(GuardState.Patrol, now);
-        }
-        break;
-      }
-      case GuardState.Stunned: {
-        this.guard.setVelocity(0, 0);
-        if (now >= this.guardStateUntil) {
-          this.setGuardState(GuardState.Return, now);
-        }
-        break;
-      }
-      default:
-        break;
-    }
-
-    const playerTooCloseWithSight =
-      sight.distance <= BALANCE.guard.nearDetection * this.getDetectionExposureMultiplier() &&
-      sight.seesPlayer &&
-      this.guardState !== GuardState.Stunned;
-    if (playerTooCloseWithSight) {
-      this.setGuardState(GuardState.Chase, now, BALANCE.guard.chaseMemoryMs);
-      this.guardLastSeen.set(this.player.x, this.player.y);
-    }
-
-    const guardBody = this.guard.body as Phaser.Physics.Arcade.Body;
-    this.updateFacingFromVelocity(this.guardFacing, guardBody.velocity);
-    if (this.guardState !== GuardState.Stunned && guardBody.velocity.lengthSq() > 20 && now >= this.guardNextFootstepAt) {
-      this.guardNextFootstepAt = now + BALANCE.audio.guardFootstepIntervalMs;
-      this.soundCues.play('guardFootstep');
-    }
-
-    if (delta > 0 && guardBody.velocity.lengthSq() < 4) {
-      this.guard.setVelocity(0, 0);
-    }
-  }
-
-  private updateHound(now: number): void {
-    if (!this.houndReleased) {
-      return;
-    }
-
-    if (this.houndState === HoundState.Reset) {
-      if (now < this.houndStateUntil) {
-        return;
-      }
-
-      this.hound.enableBody(true, this.houndSpawn.x, this.houndSpawn.y, true, true);
-      this.houndHealth = BALANCE.hound.maxHealth;
-      this.houndLastSeen.copy(this.houndReleaseTarget);
-      this.setHoundState(HoundState.Released, now, 1200);
-    }
-
-    if (!this.isHoundActive()) {
-      return;
-    }
-
-    const sight = this.getHoundSight();
-    if (sight.seesPlayer) {
-      this.houndLastSeen.set(this.player.x, this.player.y);
-      if (sight.distance <= BALANCE.hound.attackRange) {
-        this.setHoundState(HoundState.Attack, now, BALANCE.hound.attackDurationMs);
-      } else {
-        this.setHoundState(HoundState.Chase, now, BALANCE.hound.chaseMemoryMs);
-      }
-    } else if (this.houndState === HoundState.Chase && now >= this.houndStateUntil) {
-      this.setHoundState(HoundState.Search, now, BALANCE.hound.searchDurationMs);
-    } else if (this.houndState === HoundState.Search && now >= this.houndStateUntil) {
-      this.setHoundState(HoundState.Reset, now, BALANCE.hound.recoverMs);
-      this.resetHoundToKennel();
-      return;
-    }
-
-    switch (this.houndState) {
-      case HoundState.Released:
-        this.moveActorTowards(this.hound, this.houndReleaseTarget, BALANCE.hound.releasedSpeed);
-        if (Phaser.Math.Distance.Between(this.hound.x, this.hound.y, this.houndReleaseTarget.x, this.houndReleaseTarget.y) < 12 || now >= this.houndStateUntil) {
-          this.setHoundState(HoundState.Search, now, BALANCE.hound.searchDurationMs);
-        }
-        break;
-      case HoundState.Search:
-        this.moveActorTowards(this.hound, this.houndLastSeen, BALANCE.hound.searchSpeed);
-        break;
-      case HoundState.Chase:
-        this.houndStateUntil = sight.seesPlayer ? now + BALANCE.hound.chaseMemoryMs : this.houndStateUntil;
-        this.moveActorTowards(this.hound, this.houndLastSeen, BALANCE.hound.chaseSpeed);
-        break;
-      case HoundState.Attack:
-        this.moveActorTowards(this.hound, this.player, BALANCE.hound.chaseSpeed + 14);
-        if (now >= this.houndStateUntil) {
-          this.setHoundState(HoundState.Chase, now, BALANCE.hound.chaseMemoryMs);
-        }
-        break;
-      case HoundState.Idle:
-      case HoundState.Reset:
-      default:
-        break;
-    }
-
-    const houndBody = this.hound.body as Phaser.Physics.Arcade.Body;
-    this.updateFacingFromVelocity(this.houndFacing, houndBody.velocity);
-    if (houndBody.velocity.lengthSq() > 12 && now >= this.houndNextGrowlAt) {
-      this.houndNextGrowlAt = now + BALANCE.audio.houndGrowlIntervalMs;
-      this.soundCues.play(this.houndState === HoundState.Attack || this.houndState === HoundState.Chase ? 'houndBark' : 'houndGrowl');
-    }
-  }
-
-  private updateInteractionPrompt(): void {
-    this.currentPrompt = '';
-
-    if (this.torchPickup && Phaser.Math.Distance.Between(this.player.x, this.player.y, this.torchPickup.x, this.torchPickup.y) <= BALANCE.torch.interactDistance) {
-      this.currentPrompt = 'Press E or F to grab the torch.';
-    } else if (this.keyPickup && Phaser.Math.Distance.Between(this.player.x, this.player.y, this.keyPickup.x, this.keyPickup.y) <= 42) {
-      this.currentPrompt = 'Press E or F to grab the brass key.';
-    } else if (this.hasTorch) {
-      this.currentPrompt = this.torchEquipped ? 'Torch lit. Tap Q or T to douse it.' : 'Torch stowed. Tap Q or T to light it.';
-    }
-
-    if (!this.currentPrompt && Phaser.Math.Distance.Between(this.player.x, this.player.y, this.lockedDoor.x, this.lockedDoor.y) <= 56) {
-      this.currentPrompt = this.doorUnlocked
-        ? 'Archive door is open. Slip inside.'
-        : this.hasKey
-          ? 'Press E or F to unlock the archive door.'
-          : 'Locked door. The key is somewhere past the guard.';
-    }
-
-    this.promptText.setText(this.currentPrompt);
-  }
-
-  private handleInteraction(): void {
-    if (this.torchPickup && Phaser.Math.Distance.Between(this.player.x, this.player.y, this.torchPickup.x, this.torchPickup.y) <= BALANCE.torch.interactDistance) {
-      this.hasTorch = true;
-      this.torchPickup.destroy();
-      this.torchPickup = undefined;
-      if (this.torchPickupLight) {
-        this.lights.removeLight(this.torchPickupLight);
-        this.torchPickupLight = undefined;
-      }
-      this.soundCues.play('torchPickup');
-      this.setMessage('Torch secured. More sight, more risk.');
-      return;
-    }
-
-    if (this.keyPickup && Phaser.Math.Distance.Between(this.player.x, this.player.y, this.keyPickup.x, this.keyPickup.y) <= 42) {
-      this.hasKey = true;
-      this.keyPickup.destroy();
-      this.keyPickup = undefined;
-      this.soundCues.play('keyPickup');
-      this.setMessage('Key secured. Tiny chaos, maximum usefulness.');
-      return;
-    }
-
-    if (!this.doorUnlocked && this.hasKey && Phaser.Math.Distance.Between(this.player.x, this.player.y, this.lockedDoor.x, this.lockedDoor.y) <= 56) {
-      this.unlockDoor();
-      this.soundCues.play('doorUnlock');
-      this.setMessage('Door unlocked. The archive chamber is open.');
-      return;
-    }
-
-    if (!this.doorUnlocked && Phaser.Math.Distance.Between(this.player.x, this.player.y, this.lockedDoor.x, this.lockedDoor.y) <= 56) {
-      this.setMessage('No key yet. The guard owns this little loop.');
-    }
-  }
-
-  private toggleTorch(): void {
-    if (!this.hasTorch) {
-      this.setMessage('No torch in the kit yet.');
-      return;
-    }
-
-    this.torchEquipped = !this.torchEquipped;
-    this.soundCues.play(this.torchEquipped ? 'torchToggleOn' : 'torchToggleOff');
-    this.setMessage(this.torchEquipped ? 'Torch up. Vision widens, the clock snarls.' : 'Torch down. Harder to see, harder to track.');
-  }
-
-  private unlockDoor(): void {
-    this.doorUnlocked = true;
-    this.lockedDoorCollider?.destroy();
-    this.lockedDoor.destroy();
-  }
-
-  private resolveAttack(): void {
-    const attackedHound = this.tryAttackEnemy(this.hound, this.houndFacing, this.isHoundActive(), 'hound');
-    if (attackedHound) {
-      return;
-    }
-
-    const attackedGuard = this.tryAttackEnemy(this.guard, this.guardFacing, true, 'guard');
-    if (attackedGuard) {
-      return;
-    }
-
-    this.setMessage('Slash! Close, but no cigar.');
-  }
-
-  private tryAttackEnemy(
-    enemy: Phaser.Physics.Arcade.Sprite,
-    facing: Phaser.Math.Vector2,
-    active: boolean,
-    enemyType: 'guard' | 'hound',
-  ): boolean {
-    if (!active) {
-      return false;
-    }
-
-    const toEnemy = new Phaser.Math.Vector2(enemy.x - this.player.x, enemy.y - this.player.y);
-    const distance = toEnemy.length();
-    if (distance > BALANCE.player.attackReach) {
-      return false;
-    }
-
-    toEnemy.normalize();
-    const aimDot = Phaser.Math.Clamp(this.playerFacing.dot(toEnemy), -1, 1);
-    const angle = Math.acos(aimDot);
-    if (angle > Phaser.Math.DegToRad(BALANCE.player.attackArcDeg)) {
-      return false;
-    }
-
-    if (enemyType === 'guard') {
-      if (this.guardState !== GuardState.Stunned) {
-        this.setGuardState(GuardState.Stunned, this.time.now, BALANCE.guard.stunMs);
-        this.guard.setVelocity(0, 0);
-        this.setMessage('Clean hit. Guard staggered.');
-      }
-      return true;
-    }
-
-    this.houndHealth -= 1;
-    if (this.houndHealth <= 0) {
-      this.setHoundState(HoundState.Reset, this.time.now, BALANCE.hound.recoverMs);
-      this.resetHoundToKennel();
-      this.setMessage('Hound dropped. It will recover, but you bought breathing room.');
     } else {
-      this.houndLastSeen.set(this.player.x, this.player.y);
-      this.setHoundState(HoundState.Search, this.time.now, BALANCE.hound.searchDurationMs);
-      enemy.setVelocity((enemy.x - this.player.x) * 1.8, (enemy.y - this.player.y) * 1.8);
-      this.setMessage('The hound yelps and circles back. One more hit will floor it.');
-    }
-
-    return true;
-  }
-
-  private handleGuardContact(): void {
-    const now = this.time.now;
-    if (this.guardState === GuardState.Stunned || now < this.playerDamageCooldownEndsAt || this.missionComplete) {
-      return;
-    }
-
-    if (this.playerState === PlayerState.Dodge) {
-      return;
-    }
-
-    const guardToPlayer = new Phaser.Math.Vector2(this.guard.x - this.player.x, this.guard.y - this.player.y).normalize();
-    const facingDot = this.playerFacing.dot(guardToPlayer);
-    if (this.playerState === PlayerState.Block && facingDot > 0.1) {
-      if (now - this.blockStartedAt <= BALANCE.player.blockArcMs) {
-        this.setGuardState(GuardState.Stunned, now, BALANCE.guard.stunMs);
-        this.guard.setVelocity(0, 0);
-        this.setMessage('Perfect parry! The guard is seeing stars.');
-      } else {
-        this.setMessage('Guard strike blocked.');
+      const speedMultiplier = this.player.state === 'attack' ? 0.48 : this.player.state === 'block' ? 0.58 : 1;
+      const moveVelocity = moveInput.multiplyScalar(PLAYER_MOVE_SPEED * speedMultiplier);
+      this.player.velocity.lerp(moveVelocity, 0.34);
+      this.moveBody(this.player.pos, this.player.velocity, PLAYER_RADIUS, delta);
+      if (this.player.state === 'attack' && this.player.stateTimer === 0) {
+        this.player.state = 'idle';
       }
-      this.playerDamageCooldownEndsAt = now + 400;
-      return;
     }
 
-    this.applyEnemyDamage(guardToPlayer, 1, `Oof. Health at ${Math.max(this.playerHealth - 1, 0)}.`);
-  }
-
-  private handleHoundContact(): void {
-    const now = this.time.now;
-    if (!this.isHoundActive() || this.houndState === HoundState.Reset || now < this.playerDamageCooldownEndsAt || this.missionComplete) {
-      return;
+    if (interactPressed) {
+      this.handleInteraction();
+      this.pressedKeys.delete('KeyE');
+      this.pressedKeys.delete('KeyF');
     }
 
-    if (this.playerState === PlayerState.Dodge) {
-      return;
+    if (this.player.state !== 'dodge' && this.player.velocity.lengthSq() < 0.0004) {
+      this.player.velocity.set(0, 0, 0);
     }
 
-    const houndToPlayer = new Phaser.Math.Vector2(this.hound.x - this.player.x, this.hound.y - this.player.y).normalize();
-    const frontalBlock = this.playerState === PlayerState.Block && this.playerFacing.dot(houndToPlayer) > 0.2;
-    if (frontalBlock) {
-      this.playerDamageCooldownEndsAt = now + 350;
-      this.setMessage('The hound slams the shield line but doesn’t break through.');
-      return;
-    }
+    this.player.mesh.position.set(this.player.pos.x, 0, this.player.pos.z);
+    this.player.mesh.rotation.y = Math.atan2(this.player.facing.x, this.player.facing.z);
 
-    if (now >= this.houndNextBarkAt) {
-      this.houndNextBarkAt = now + BALANCE.audio.barkCooldownMs;
-      this.soundCues.play('houndBark');
-    }
+    this.torchLight.intensity = this.player.torchOn ? TORCH_ON_INTENSITY : TORCH_OFF_INTENSITY;
+    this.torchLight.distance = this.player.torchOn ? 21 : 11;
+    this.fillLight.intensity = this.player.torchOn ? 0.45 : 0.95;
+    this.fillLight.distance = this.player.torchOn ? 3.8 : 5.8;
+    this.fillLight.position.copy(this.player.pos).add(new THREE.Vector3(0, 0.55, 0));
 
-    this.applyEnemyDamage(houndToPlayer, BALANCE.hound.damage, `Mauled. Health at ${Math.max(this.playerHealth - BALANCE.hound.damage, 0)}.`);
-  }
+    this.torchLight.position.copy(this.player.pos).add(new THREE.Vector3(0, 1.1, 0));
+    this.torchTarget.position.copy(this.player.pos).add(this.player.facing.clone().multiplyScalar(3)).add(new THREE.Vector3(0, 0.7, 0));
+    this.torchLight.target = this.torchTarget;
 
-  private applyEnemyDamage(direction: Phaser.Math.Vector2, amount: number, message: string): void {
-    this.playerHealth -= amount;
-    this.playerDamageCooldownEndsAt = this.time.now + BALANCE.player.damageCooldownMs;
-    const knockback = direction.scale(-BALANCE.player.contactKnockback);
-    this.player.setVelocity(knockback.x, knockback.y);
-    this.cameras.main.shake(130, 0.008);
-    this.setMessage(message);
+    this.keyLight.visible = this.key.active;
+    this.keyLight.intensity = this.player.torchOn ? 1.1 : 1.5;
 
-    if (this.playerHealth <= 0) {
+    if (this.player.health <= 0) {
       this.respawnPlayer();
     }
   }
 
-  private respawnPlayer(): void {
-    this.playerHealth = BALANCE.player.maxHealth;
-    this.player.setPosition(this.playerSpawn.x, this.playerSpawn.y);
-    this.player.setVelocity(0, 0);
-    this.playerState = PlayerState.Idle;
-    this.playerFacing.copy(this.lastMoveDirection);
-
-    this.guard.setPosition(this.guardSpawn.x, this.guardSpawn.y);
-    this.guard.setVelocity(0, 0);
-    this.guardPatrolIndex = 0;
-    this.setGuardState(GuardState.Patrol, this.time.now);
-
-    if (this.houndReleased) {
-      this.resetHoundToKennel();
-      this.setHoundState(HoundState.Released, this.time.now, 1200);
-      this.hound.enableBody(true, this.houndSpawn.x, this.houndSpawn.y, true, true);
-      this.houndHealth = BALANCE.hound.maxHealth;
-      this.houndLastSeen.copy(this.houndReleaseTarget);
+  private updateGuard(delta: number): void {
+    if (this.player.missionComplete) {
+      this.guard.velocity.set(0, 0, 0);
+      this.clearGuardPath();
+      return;
     }
 
+    this.guardRepathTimer = Math.max(0, this.guardRepathTimer - delta);
+    this.guard.stateTimer = Math.max(0, this.guard.stateTimer - delta);
+    const sight = this.getGuardSight();
+
+    if (this.guard.state !== 'stunned') {
+      if (sight.seesPlayer && sight.distance <= GUARD_CHASE_DISTANCE) {
+        this.guard.state = 'chase';
+        this.guard.stateTimer = 1.2;
+        this.guard.lastSeen.copy(this.player.pos);
+      } else if (sight.seesPlayer) {
+        if (this.guard.state !== 'chase') {
+          this.guard.state = 'suspicious';
+        }
+        this.guard.stateTimer = 1.8;
+        this.guard.lastSeen.copy(this.player.pos);
+      } else if (this.guard.state === 'chase' && this.guard.stateTimer === 0) {
+        this.guard.state = 'return';
+      }
+    }
+
+    switch (this.guard.state) {
+      case 'patrol': {
+        const target = this.guardWaypoints[this.guard.patrolIndex];
+        this.moveGuardTowards(target, GUARD_PATROL_SPEED, delta);
+        if (this.guard.pos.distanceTo(target) < 0.3) {
+          this.advanceGuardPatrol();
+        }
+        break;
+      }
+      case 'suspicious': {
+        this.moveGuardTowards(this.guard.lastSeen, GUARD_SUSPICIOUS_SPEED, delta);
+        if (this.guard.pos.distanceTo(this.guard.lastSeen) < 0.45) {
+          this.guard.velocity.set(0, 0, 0);
+        }
+        if (this.guard.stateTimer === 0) {
+          this.guard.state = 'return';
+        }
+        break;
+      }
+      case 'chase': {
+        this.guard.lastSeen.copy(this.player.pos);
+        this.moveGuardTowards(this.guard.lastSeen, GUARD_CHASE_SPEED, delta);
+        break;
+      }
+      case 'return': {
+        const target = this.guardWaypoints[this.guard.patrolIndex];
+        this.moveGuardTowards(target, GUARD_RETURN_SPEED, delta);
+        if (this.guard.pos.distanceTo(target) < 0.4) {
+          this.guard.state = 'patrol';
+          this.guard.stalledFor = 0;
+        }
+        break;
+      }
+      case 'stunned': {
+        this.guard.velocity.set(0, 0, 0);
+        this.clearGuardPath();
+        if (this.guard.stateTimer === 0) {
+          this.guard.state = 'return';
+        }
+        break;
+      }
+    }
+
+    if (sight.seesPlayer && sight.distance <= GUARD_NEAR_DETECTION && this.guard.state !== 'stunned') {
+      this.guard.state = 'chase';
+      this.guard.stateTimer = 1.2;
+      this.guard.lastSeen.copy(this.player.pos);
+    }
+
+    this.updateGuardPatrolRecovery(delta);
+
+    this.handleGuardContact();
+    this.guard.mesh.position.set(this.guard.pos.x, 0, this.guard.pos.z);
+    this.guard.mesh.rotation.y = Math.atan2(this.guard.facing.x, this.guard.facing.z);
+
+    const currentSightDistance = this.getGuardSightDistance();
+    this.guardSightMesh.position.set(this.guard.pos.x, 0.04, this.guard.pos.z);
+    this.guardSightMesh.rotation.set(-Math.PI / 2, this.guard.mesh.rotation.y, 0);
+    this.guardSightMesh.scale.setScalar(currentSightDistance / GUARD_SIGHT_DISTANCE_TORCH);
+
+    const guardMaterial = this.guard.body.material as THREE.MeshStandardMaterial;
+    const colorByState: Record<GuardState, number> = {
+      patrol: 0xce526a,
+      suspicious: 0xf0953e,
+      chase: 0xf05a6b,
+      return: 0x8a93af,
+      stunned: 0x7bd8ff,
+    };
+    guardMaterial.color.setHex(colorByState[this.guard.state]);
+
+    const sightColor = sight.seesPlayer ? 0xff6b6b : this.guard.state === 'chase' || this.guard.state === 'suspicious' ? 0xf0a93e : 0xeac76a;
+    this.guardSightMaterial.color.setHex(sightColor);
+    this.guardSightMaterial.opacity = sight.seesPlayer ? 0.3 : this.guard.state === 'chase' ? 0.24 : 0.16;
+  }
+
+  private updateWorldActors(delta: number): void {
+    if (this.key.active) {
+      this.key.mesh.rotation.y += delta * 1.7;
+      this.key.mesh.position.y = this.key.pos.y + Math.sin(performance.now() * 0.003) * 0.04;
+    }
+
+    if (!this.player.missionComplete && !this.door.locked && this.isInsideRect(this.player.pos.x, this.player.pos.z, this.exitZone)) {
+      this.player.missionComplete = true;
+      this.setMessage('Wing breached. Shoulder-slice objective complete.');
+    }
+  }
+
+  private updateCamera(): void {
+    const focus = this.player.pos.clone().add(new THREE.Vector3(0, CAMERA_HEIGHT, 0));
+    const shoulder = new THREE.Vector3(
+      Math.sin(this.yaw + Math.PI / 2) * CAMERA_SHOULDER_OFFSET,
+      0,
+      Math.cos(this.yaw + Math.PI / 2) * CAMERA_SHOULDER_OFFSET,
+    );
+    const baseDirection = new THREE.Vector3(
+      Math.sin(this.yaw) * Math.cos(this.pitch),
+      Math.sin(this.pitch),
+      Math.cos(this.yaw) * Math.cos(this.pitch),
+    )
+      .normalize()
+      .multiplyScalar(-CAMERA_DISTANCE);
+
+    const desiredCamera = focus.clone().add(shoulder).add(baseDirection);
+    const cameraAnchor = focus.clone().add(shoulder.multiplyScalar(0.65));
+    const direction = desiredCamera.clone().sub(cameraAnchor);
+    const distance = direction.length();
+    direction.normalize();
+
+    this.raycaster.set(cameraAnchor, direction);
+    this.raycaster.far = distance;
+    const hits = this.raycaster.intersectObjects(this.wallMeshes, false);
+    let finalCamera = desiredCamera;
+    if (hits.length > 0) {
+      finalCamera = cameraAnchor.clone().add(direction.multiplyScalar(Math.max(CAMERA_MIN_DISTANCE, hits[0].distance - 0.18)));
+    }
+
+    this.camera.position.lerp(finalCamera, 0.24);
+    this.camera.lookAt(focus);
+  }
+
+  private handleInteraction(): void {
+    if (this.key.active && this.player.pos.distanceTo(this.key.pos) <= 1.5) {
+      this.key.active = false;
+      this.player.hasKey = true;
+      this.key.mesh.visible = false;
+      this.setMessage('Key secured. Tiny chaos, maximum usefulness.');
+      return;
+    }
+
+    const doorDistance = this.player.pos.distanceTo(this.door.pos);
+    if (this.door.locked && this.player.hasKey && doorDistance <= 1.75) {
+      this.unlockDoor();
+      this.setMessage('Door unlocked. The archive loop is open.');
+      return;
+    }
+
+    if (this.door.locked && doorDistance <= 1.75) {
+      this.setMessage('Locked. The key is somewhere past the guard.');
+    }
+  }
+
+  private unlockDoor(): void {
+    this.door.locked = false;
+    this.door.mesh.visible = false;
+  }
+
+  private resolveAttack(): void {
+    const toGuard = this.guard.pos.clone().sub(this.player.pos);
+    const distance = toGuard.length();
+    if (distance > 1.8) {
+      this.setMessage('Slash! Close, but no cigar.');
+      return;
+    }
+
+    toGuard.y = 0;
+    toGuard.normalize();
+    const aimDot = THREE.MathUtils.clamp(this.player.facing.dot(toGuard), -1, 1);
+    const angle = Math.acos(aimDot);
+    if (angle <= THREE.MathUtils.degToRad(55) && this.guard.state !== 'stunned') {
+      this.guard.state = 'stunned';
+      this.guard.stateTimer = GUARD_STUN_SECONDS;
+      this.guard.velocity.set(0, 0, 0);
+      this.setMessage('Clean hit. Guard staggered.');
+      return;
+    }
+
+    this.setMessage('Your swing whiffs past the helmet.');
+  }
+
+  private handleGuardContact(): void {
+    const distance = this.guard.pos.distanceTo(this.player.pos);
+    if (distance > PLAYER_RADIUS + GUARD_RADIUS + 0.18 || this.guard.state === 'stunned' || this.player.missionComplete) {
+      return;
+    }
+
+    if (this.player.damageCooldown > 0 || this.player.state === 'dodge') {
+      return;
+    }
+
+    const guardToPlayer = this.player.pos.clone().sub(this.guard.pos).setY(0).normalize();
+    const facingDot = this.player.facing.dot(guardToPlayer);
+    if (this.player.state === 'block' && facingDot > 0.12) {
+      if (this.player.blockTimer > 0) {
+        this.guard.state = 'stunned';
+        this.guard.stateTimer = GUARD_STUN_SECONDS;
+        this.guard.velocity.set(0, 0, 0);
+        this.setMessage('Perfect parry! The guard is seeing stars.');
+      } else {
+        this.setMessage('Guard strike blocked.');
+      }
+      this.player.damageCooldown = 0.4;
+      return;
+    }
+
+    this.player.health -= 1;
+    this.player.damageCooldown = 1;
+    const knockback = guardToPlayer.multiplyScalar(2.3);
+    this.moveBody(this.player.pos, knockback, PLAYER_RADIUS, 1);
+    this.setMessage(`Oof. Health at ${Math.max(this.player.health, 0)}.`);
+  }
+
+  private respawnPlayer(): void {
+    this.player.health = PLAYER_MAX_HEALTH;
+    this.player.pos.copy(this.spawnPoint);
+    this.player.velocity.set(0, 0, 0);
+    this.player.state = 'idle';
+    this.player.hasKey = false;
+    this.player.torchOn = false;
+    this.key.active = true;
+    this.key.mesh.visible = true;
+    this.door.locked = true;
+    this.door.mesh.visible = true;
+    this.guard.pos.copy(this.guardSpawn);
+    this.guard.velocity.set(0, 0, 0);
+    this.guard.state = 'patrol';
+    this.guard.stateTimer = 0;
+    this.guard.patrolIndex = 0;
+    this.guard.lastPatrolPos.copy(this.guard.pos);
+    this.guard.stalledFor = 0;
+    this.clearGuardPath();
     this.setMessage('Dragged back to the wing entrance. Try a sneakier route.');
   }
 
-  private releaseHound(): void {
-    if (this.houndReleased) {
-      return;
-    }
-
-    this.houndReleased = true;
-    this.countdownWarningStage = 'released';
-    this.hound.enableBody(true, this.houndSpawn.x, this.houndSpawn.y, true, true);
-    this.houndHealth = BALANCE.hound.maxHealth;
-    this.houndLastSeen.copy(this.player);
-    this.setHoundState(HoundState.Released, this.time.now, 1200);
-    this.houndWarningLight.setIntensity(BALANCE.hound.warningLightIntensity);
-    this.soundCues.play('alertTrigger');
-    this.soundCues.play('houndGrowl');
-    this.cameras.main.flash(BALANCE.hound.warningFlashMs / 10, 255, 70, 70, false);
-    this.cameras.main.shake(180, 0.01);
-    this.setMessage('Kennel breach. Hound released. Move or get eaten.');
-  }
-
-  private resetHoundToKennel(): void {
-    this.hound.disableBody(true, true);
-    this.hound.setPosition(this.houndSpawn.x, this.houndSpawn.y);
-    this.hound.setVelocity(0, 0);
-    this.houndFacing.set(-1, 0);
-    this.houndWarningLight.setIntensity(0.28);
-  }
-
-  private setGuardState(state: GuardState, now: number, durationMs?: number): void {
-    const changed = this.guardState !== state;
-    this.guardState = state;
-    if (durationMs !== undefined) {
-      this.guardStateUntil = now + durationMs;
-    }
-
-    if (changed && (state === GuardState.Suspicious || state === GuardState.Chase)) {
-      this.soundCues.play('alertTrigger');
-    }
-  }
-
-  private setHoundState(state: HoundState, now: number, durationMs?: number): void {
-    const changed = this.houndState !== state;
-    this.houndState = state;
-    if (durationMs !== undefined) {
-      this.houndStateUntil = now + durationMs;
-    }
-
-    if (!changed) {
-      return;
-    }
-
-    if (state === HoundState.Chase || state === HoundState.Attack) {
-      this.soundCues.play('houndBark');
-    } else if (state === HoundState.Released || state === HoundState.Search) {
-      this.soundCues.play('houndGrowl');
-    }
-  }
-
-  private getDetectionExposureMultiplier(): number {
-    return this.torchEquipped ? BALANCE.torch.exposureMultiplier : 1;
-  }
-
-  private isHoundActive(): boolean {
-    const body = this.hound.body as Phaser.Physics.Arcade.Body | null;
-    return Boolean(body?.enable);
+  private getGuardSightDistance(): number {
+    return this.player.torchOn ? GUARD_SIGHT_DISTANCE_TORCH : GUARD_SIGHT_DISTANCE;
   }
 
   private getGuardSight(): { seesPlayer: boolean; distance: number } {
-    const toPlayer = new Phaser.Math.Vector2(this.player.x - this.guard.x, this.player.y - this.guard.y);
+    const toPlayer = this.player.pos.clone().sub(this.guard.pos);
+    toPlayer.y = 0;
     const distance = toPlayer.length();
-    const sightDistance = BALANCE.guard.sightDistance * this.getDetectionExposureMultiplier();
-    if (distance > sightDistance) {
+    const detectionDistance = this.getGuardSightDistance();
+    if (distance > detectionDistance) {
       return { seesPlayer: false, distance };
     }
 
-    const direction = toPlayer.clone().normalize();
-    const dot = Phaser.Math.Clamp(this.guardFacing.dot(direction), -1, 1);
+    const direction = toPlayer.normalize();
+    const dot = THREE.MathUtils.clamp(this.guard.facing.dot(direction), -1, 1);
     const angle = Math.acos(dot);
-    const blocked = this.isLineBlocked(this.guard.x, this.guard.y, this.player.x, this.player.y);
-    const seesPlayer = angle <= GUARD_VIEW_ANGLE / 2 && !blocked;
+    const blocked = this.isLineBlocked(this.guard.pos.x, this.guard.pos.z, this.player.pos.x, this.player.pos.z);
+    const seesPlayer = angle <= GUARD_FOV / 2 && !blocked;
     return { seesPlayer, distance };
   }
 
-  private getHoundSight(): { seesPlayer: boolean; distance: number } {
-    const toPlayer = new Phaser.Math.Vector2(this.player.x - this.hound.x, this.player.y - this.hound.y);
-    const distance = toPlayer.length();
-    const sightDistance = BALANCE.hound.sightDistance * this.getDetectionExposureMultiplier();
-    if (distance > sightDistance) {
-      return { seesPlayer: false, distance };
+  private isLineBlocked(x1: number, z1: number, x2: number, z2: number): boolean {
+    return this.walls.some((wall) => this.lineIntersectsRect(x1, z1, x2, z2, wall));
+  }
+
+  private lineIntersectsRect(x1: number, z1: number, x2: number, z2: number, wall: WallRect): boolean {
+    if ((x1 >= wall.minX && x1 <= wall.maxX && z1 >= wall.minZ && z1 <= wall.maxZ) || (x2 >= wall.minX && x2 <= wall.maxX && z2 >= wall.minZ && z2 <= wall.maxZ)) {
+      return true;
     }
 
-    const direction = toPlayer.clone().normalize();
-    const dot = Phaser.Math.Clamp(this.houndFacing.dot(direction), -1, 1);
-    const angle = Math.acos(dot);
-    const blocked = this.isLineBlocked(this.hound.x, this.hound.y, this.player.x, this.player.y);
-    const seesPlayer = (!blocked && angle <= HOUND_VIEW_ANGLE / 2) || distance <= BALANCE.hound.nearDetection;
-    return { seesPlayer, distance };
+    const edges: Array<[number, number, number, number]> = [
+      [wall.minX, wall.minZ, wall.maxX, wall.minZ],
+      [wall.maxX, wall.minZ, wall.maxX, wall.maxZ],
+      [wall.maxX, wall.maxZ, wall.minX, wall.maxZ],
+      [wall.minX, wall.maxZ, wall.minX, wall.minZ],
+    ];
+
+    return edges.some(([ax, az, bx, bz]) => this.segmentsIntersect(x1, z1, x2, z2, ax, az, bx, bz));
   }
 
-  private isLineBlocked(x1: number, y1: number, x2: number, y2: number): boolean {
-    const line = new Phaser.Geom.Line(x1, y1, x2, y2);
-    return this.wallRects.some((rect) => Phaser.Geom.Intersects.LineToRectangle(line, rect));
+  private segmentsIntersect(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number, x4: number, y4: number): boolean {
+    const det = (a: number, b: number, c: number, d: number) => a * d - b * c;
+    const denominator = det(x1 - x2, y1 - y2, x3 - x4, y3 - y4);
+    if (Math.abs(denominator) < 1e-8) {
+      return false;
+    }
+
+    const pre = det(x1, y1, x2, y2);
+    const post = det(x3, y3, x4, y4);
+    const x = det(pre, x1 - x2, post, x3 - x4) / denominator;
+    const y = det(pre, y1 - y2, post, y3 - y4) / denominator;
+
+    const within = (value: number, start: number, end: number) => value >= Math.min(start, end) - 1e-6 && value <= Math.max(start, end) + 1e-6;
+    return within(x, x1, x2) && within(x, x3, x4) && within(y, y1, y2) && within(y, y3, y4);
   }
 
-  private moveActorTowards(
-    actor: Phaser.Physics.Arcade.Sprite,
-    target: Phaser.Math.Vector2 | Phaser.GameObjects.Components.Transform,
-    speed: number,
-  ): void {
-    const velocity = new Phaser.Math.Vector2(target.x - actor.x, target.y - actor.y);
-    if (velocity.lengthSq() <= 1) {
-      actor.setVelocity(0, 0);
+  private moveGuardTowards(target: THREE.Vector3, speed: number, delta: number): void {
+    const navigationTarget = this.getGuardNavigationTarget(target);
+    const velocity = navigationTarget.clone().sub(this.guard.pos);
+    velocity.y = 0;
+    if (velocity.lengthSq() <= 0.0001) {
+      this.guard.velocity.set(0, 0, 0);
       return;
     }
 
-    velocity.normalize().scale(speed);
-    actor.setVelocity(velocity.x, velocity.y);
+    velocity.normalize();
+    this.guard.facing.lerp(velocity, 0.22).normalize();
+    this.guard.velocity.copy(velocity.multiplyScalar(speed));
+    this.moveBody(this.guard.pos, this.guard.velocity, GUARD_RADIUS, delta);
   }
 
-  private updateFacingFromVelocity(targetFacing: Phaser.Math.Vector2, velocity: Phaser.Math.Vector2): void {
-    if (velocity.lengthSq() > 6) {
-      targetFacing.copy(velocity.clone().normalize());
+  private getGuardNavigationTarget(target: THREE.Vector3): THREE.Vector3 {
+    const start = { x: this.guard.pos.x, z: this.guard.pos.z };
+    const destination = { x: target.x, z: target.z };
+    const walls = this.getNavigationWalls();
+
+    if (hasClearPath(start, destination, walls, GUARD_RADIUS)) {
+      this.clearGuardPath();
+      return target;
     }
+
+    const targetMoved = this.guardPathTarget.distanceToSquared(target) > 0.36;
+    if (targetMoved || this.guardRepathTimer === 0 || this.guardPath.length === 0) {
+      this.guardPath = findGuardPath({
+        start,
+        target: destination,
+        walls,
+        radius: GUARD_RADIUS,
+        bounds: { minX: 0, maxX: WORLD_WIDTH, minZ: 0, maxZ: WORLD_DEPTH },
+        step: GUARD_NAV_STEP,
+      });
+      this.guardPathTarget.copy(target);
+      this.guardRepathTimer = this.guard.state === 'chase' ? 0.18 : 0.4;
+    }
+
+    while (this.guardPath.length > 0) {
+      const next = this.guardPath[0];
+      const distance = Math.hypot(next.x - this.guard.pos.x, next.z - this.guard.pos.z);
+      if (distance > 0.3) {
+        break;
+      }
+      this.guardPath.shift();
+    }
+
+    if (this.guardPath.length === 0) {
+      return target;
+    }
+
+    const waypoint = this.guardPath[0];
+    return this.tmpVecA.set(waypoint.x, target.y, waypoint.z);
   }
 
-  private drawSightCones(): void {
-    const guardColorByState: Record<GuardState, number> = {
-      [GuardState.Patrol]: 0xd4b259,
-      [GuardState.Suspicious]: 0xf58a3c,
-      [GuardState.Chase]: 0xdd4d5f,
-      [GuardState.Return]: 0x8c97b5,
-      [GuardState.Stunned]: 0x7bd8ff,
+  private getNavigationWalls(): NavigationRect[] {
+    const walls = this.walls.map<NavigationRect>((wall) => ({
+      minX: wall.minX,
+      maxX: wall.maxX,
+      minZ: wall.minZ,
+      maxZ: wall.maxZ,
+    }));
+
+    if (this.door.locked) {
+      walls.push(this.doorCollisionRect);
+    }
+
+    return walls;
+  }
+
+  private clearGuardPath(): void {
+    this.guardPath = [];
+    this.guardRepathTimer = 0;
+    this.guardPathTarget.set(Number.POSITIVE_INFINITY, 0, Number.POSITIVE_INFINITY);
+  }
+
+  private advanceGuardPatrol(): void {
+    this.guard.patrolIndex = (this.guard.patrolIndex + 1) % this.guardWaypoints.length;
+    this.guard.stalledFor = 0;
+    this.guard.lastPatrolPos.copy(this.guard.pos);
+  }
+
+  private updateGuardPatrolRecovery(delta: number): void {
+    const movedDistance = this.guard.pos.distanceTo(this.guard.lastPatrolPos);
+    this.guard.lastPatrolPos.copy(this.guard.pos);
+
+    if (this.guard.state !== 'patrol' && this.guard.state !== 'return') {
+      this.guard.stalledFor = 0;
+      return;
+    }
+
+    const target = this.guardWaypoints[this.guard.patrolIndex];
+    const distanceToTarget = this.guard.pos.distanceTo(target);
+    if (distanceToTarget < 0.45 || this.guard.velocity.lengthSq() < 0.01) {
+      this.guard.stalledFor = 0;
+      return;
+    }
+
+    if (movedDistance < 0.015) {
+      this.guard.stalledFor += delta;
+    } else {
+      this.guard.stalledFor = 0;
+    }
+
+    if (this.guard.stalledFor < 0.45) {
+      return;
+    }
+
+    this.guard.state = 'patrol';
+    this.advanceGuardPatrol();
+    this.guard.velocity.set(0, 0, 0);
+  }
+
+  private moveBody(position: THREE.Vector3, velocity: THREE.Vector3, radius: number, delta: number): void {
+    const next = moveCircle(position, velocity, radius, delta, this.getCollisionRects());
+    position.x = next.x;
+    position.z = next.z;
+    position.y = PLAYER_HEIGHT * 0.5;
+  }
+
+  private getCollisionRects(): CollisionRect[] {
+    const walls = this.walls.map<CollisionRect>((wall) => ({
+      minX: wall.minX,
+      maxX: wall.maxX,
+      minZ: wall.minZ,
+      maxZ: wall.maxZ,
+    }));
+
+    if (this.door.locked) {
+      walls.push(this.doorCollisionRect);
+    }
+
+    return walls;
+  }
+
+  private isInsideRect(x: number, z: number, rect: { minX: number; maxX: number; minZ: number; maxZ: number }): boolean {
+    return x >= rect.minX && x <= rect.maxX && z >= rect.minZ && z <= rect.maxZ;
+  }
+
+  private updateUi(): void {
+    const guardLabel: Record<GuardState, string> = {
+      patrol: 'patrolling',
+      suspicious: 'suspicious',
+      chase: 'chasing',
+      return: 'resetting',
+      stunned: 'stunned',
     };
 
-    this.guardSightGraphics.clear();
-    this.drawSightCone(
-      this.guardSightGraphics,
-      this.guard.x,
-      this.guard.y,
-      this.guardFacing,
-      BALANCE.guard.sightDistance * this.getDetectionExposureMultiplier(),
-      GUARD_VIEW_ANGLE,
-      guardColorByState[this.guardState],
-      this.guardState === GuardState.Chase ? 0.28 : 0.18,
-    );
-
-    this.houndSightGraphics.clear();
-    if (this.isHoundActive()) {
-      const houndAlpha = this.houndState === HoundState.Chase || this.houndState === HoundState.Attack ? 0.3 : 0.15;
-      this.drawSightCone(
-        this.houndSightGraphics,
-        this.hound.x,
-        this.hound.y,
-        this.houndFacing,
-        BALANCE.hound.sightDistance * this.getDetectionExposureMultiplier(),
-        HOUND_VIEW_ANGLE,
-        0xff5b67,
-        houndAlpha,
-      );
-    }
+    this.ui.hud.textContent = `HP ${'♥'.repeat(this.player.health)}${'·'.repeat(PLAYER_MAX_HEALTH - this.player.health)}  •  Key ${this.player.hasKey ? 'yes' : 'no'}  •  Dodge ${this.player.dodgeCooldown > 0 ? this.player.dodgeCooldown.toFixed(1) : 'ready'}  •  Torch ${this.player.torchOn ? 'on' : 'off'}`;
+    this.ui.status.textContent = `Guard ${guardLabel[this.guard.state]}  •  Sight ${this.getGuardSightDistance().toFixed(1)}m  •  Player ${this.player.state}`;
+    this.ui.message.textContent = this.messageTimer > 0 ? this.message : '';
+    this.ui.objective.textContent = this.player.missionComplete ? 'Archive breached — shoulder slice clear.' : 'Objective: key → door → archive';
+    this.ui.prompt.textContent = this.getPromptText();
+    this.ui.controls.textContent = 'Shoulder camera sits tighter now. The guard loops a short hallway patrol, the floor cone shows current sight range, and your torch stretches that cone.';
   }
 
-  private drawSightCone(
-    graphics: Phaser.GameObjects.Graphics,
-    x: number,
-    y: number,
-    facing: Phaser.Math.Vector2,
-    distance: number,
-    angleWidth: number,
-    color: number,
-    alpha: number,
-  ): void {
-    graphics.fillStyle(color, alpha);
-    graphics.lineStyle(2, color, Math.min(alpha + 0.2, 0.5));
-
-    const start = Math.atan2(facing.y, facing.x) - angleWidth / 2;
-    const steps = 18;
-    graphics.beginPath();
-    graphics.moveTo(x, y);
-    for (let i = 0; i <= steps; i += 1) {
-      const angle = start + (angleWidth / steps) * i;
-      const px = x + Math.cos(angle) * distance;
-      const py = y + Math.sin(angle) * distance;
-      graphics.lineTo(px, py);
-    }
-    graphics.closePath();
-    graphics.fillPath();
-    graphics.strokePath();
-  }
-
-  private updateLightsAndUi(now: number): void {
-    this.playerLight.x = this.player.x;
-    this.playerLight.y = this.player.y;
-
-    let lightRadius: number = BALANCE.player.lightRadius;
-    let lightIntensity: number = BALANCE.player.lightIntensity;
-
-    if (this.torchEquipped) {
-      lightRadius = BALANCE.player.torchLightRadius;
-      lightIntensity = BALANCE.player.torchLightIntensity;
+  private getPromptText(): string {
+    if (this.key.active && this.player.pos.distanceTo(this.key.pos) <= 1.5) {
+      return 'Press E or F to grab the brass key.';
     }
 
-    if (this.playerState === PlayerState.Dodge) {
-      lightRadius = Math.max(lightRadius, BALANCE.player.dodgeLightRadius);
-    }
-
-    if (this.playerState === PlayerState.Block) {
-      lightIntensity = BALANCE.player.blockLightIntensity;
-    }
-
-    this.playerLight.radius = lightRadius;
-    this.playerLight.intensity = lightIntensity;
-    this.playerLight.setColor(this.torchEquipped ? 0xffd28a : 0xe8f4ff);
-
-    const warningPulse = this.houndReleased
-      ? 0.75 + Math.sin(now / 120) * 0.25
-      : this.countdownRemainingMs <= BALANCE.countdown.criticalWarningMs
-        ? 0.25 + Math.sin(now / 180) * 0.12
-        : 0.2;
-    this.houndWarningLight.setIntensity(this.houndReleased ? warningPulse : Math.max(0.16, warningPulse));
-
-    const guardLabel = (() => {
-      switch (this.guardState) {
-        case GuardState.Patrol:
-          return 'patrolling';
-        case GuardState.Suspicious:
-          return 'suspicious';
-        case GuardState.Chase:
-          return 'chasing';
-        case GuardState.Return:
-          return 'resetting';
-        case GuardState.Stunned:
-          return 'stunned';
-        default:
-          return 'unknown';
+    const doorDistance = this.player.pos.distanceTo(this.door.pos);
+    if (doorDistance <= 1.75) {
+      if (this.door.locked && this.player.hasKey) {
+        return 'Press E or F to unlock the archive door.';
       }
-    })();
-
-    const houndLabel = (() => {
-      switch (this.houndState) {
-        case HoundState.Idle:
-          return 'dormant';
-        case HoundState.Released:
-          return 'released';
-        case HoundState.Search:
-          return 'searching';
-        case HoundState.Chase:
-          return 'chasing';
-        case HoundState.Attack:
-          return 'lunging';
-        case HoundState.Reset:
-          return 'resetting';
-        default:
-          return 'unknown';
+      if (this.door.locked) {
+        return 'Locked door. The key is somewhere past the guard.';
       }
-    })();
-
-    const cooldown = Math.max(0, this.dodgeCooldownEndsAt - now);
-    const dodgeSeconds = cooldown > 0 ? (cooldown / 1000).toFixed(1) : 'ready';
-    const timerLabel = this.houndReleased ? 'RELEASED' : this.formatCountdown(this.countdownRemainingMs);
-
-    this.hudText.setText([
-      `HP ${'♥'.repeat(this.playerHealth)}${'·'.repeat(BALANCE.player.maxHealth - this.playerHealth)}`,
-      `Key ${this.hasKey ? 'yes' : 'no'}`,
-      `Torch ${this.hasTorch ? (this.torchEquipped ? 'lit' : 'stowed') : 'none'}`,
-      `Dodge ${dodgeSeconds}`,
-    ].join('  •  '));
-    this.timerText.setText(`Kennel ${timerLabel}`);
-    this.statusText.setText(`Guard ${guardLabel}  •  Hound ${houndLabel}  •  Player ${this.playerState}`);
-
-    this.objectiveText.setText(
-      this.missionComplete
-        ? 'Archive breached — horror loop clear.'
-        : 'Objective: torch/key → door → archive, before the hound eats the plan',
-    );
-
-    if (now >= this.messageExpiresAt) {
-      this.messageText.setText('');
-    }
-  }
-
-  private checkObjective(): void {
-    if (!this.doorUnlocked || this.missionComplete) {
-      return;
+      return 'Archive door is open. Slip inside.';
     }
 
-    const overlapping = Phaser.Geom.Intersects.RectangleToRectangle(this.player.getBounds(), this.objectiveZone.getBounds());
-    if (overlapping) {
-      this.missionComplete = true;
-      this.setMessage('Wing breached. Horror slice objective complete.');
-    }
-  }
-
-  private formatCountdown(ms: number): string {
-    const totalSeconds = Math.ceil(ms / 1000);
-    const minutes = Math.floor(totalSeconds / 60)
-      .toString()
-      .padStart(2, '0');
-    const seconds = (totalSeconds % 60).toString().padStart(2, '0');
-    return `${minutes}:${seconds}`;
+    return '';
   }
 
   private setMessage(message: string): void {
-    this.messageText.setText(message);
-    this.messageExpiresAt = this.time.now + BALANCE.ui.messageDurationMs;
+    this.message = message;
+    this.messageTimer = 3.1;
   }
 }
 
-const config: Phaser.Types.Core.GameConfig = {
-  type: Phaser.WEBGL,
-  width: GAME_WIDTH,
-  height: GAME_HEIGHT,
-  parent: 'app',
-  backgroundColor: BALANCE.world.backgroundColor,
-  physics: {
-    default: 'arcade',
-    arcade: {
-      debug: false,
-      gravity: { x: 0, y: 0 },
-    },
-  },
-  scene: [DungeonCrawlerScene],
-  scale: {
-    mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
-  },
-  input: {
-    activePointers: 2,
-    mouse: {
-      preventDefaultDown: true,
-    },
-  },
-};
+const app = document.querySelector<HTMLDivElement>('#app');
+if (!app) {
+  throw new Error('App container not found.');
+}
 
-new Phaser.Game(config);
+new DungeonCrawlerApp(app);
