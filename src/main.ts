@@ -46,10 +46,10 @@ const GUARD_CHASE_DISTANCE = 5.5;
 const GUARD_NEAR_DETECTION = 1.8;
 const GUARD_FOV = THREE.MathUtils.degToRad(82);
 const GUARD_STUN_SECONDS = 3.2;
-const CAMERA_DISTANCE = 2.85;
-const CAMERA_SHOULDER_OFFSET = 0.52;
-const CAMERA_HEIGHT = 1.78;
-const CAMERA_MIN_DISTANCE = 0.92;
+const CAMERA_DISTANCE = 2.35;
+const CAMERA_SHOULDER_OFFSET = 0.42;
+const CAMERA_HEIGHT = 1.68;
+const CAMERA_MIN_DISTANCE = 0.78;
 const TORCH_ON_INTENSITY = 2.8;
 const TORCH_OFF_INTENSITY = 0.85;
 
@@ -67,10 +67,10 @@ class DungeonCrawlerApp {
   private readonly walls: WallRect[] = [];
   private readonly wallMeshes: THREE.Object3D[] = [];
   private readonly guardWaypoints = [
-    new THREE.Vector3(28.4, 0, 15.4),
-    new THREE.Vector3(24.1, 0, 15.4),
-    new THREE.Vector3(24.1, 0, 12.2),
-    new THREE.Vector3(28.4, 0, 12.2),
+    new THREE.Vector3(28.2, 0, 16.1),
+    new THREE.Vector3(23.6, 0, 16.1),
+    new THREE.Vector3(23.6, 0, 11.5),
+    new THREE.Vector3(28.2, 0, 11.5),
   ];
   private readonly player = {
     pos: new THREE.Vector3(4.5, PLAYER_HEIGHT * 0.5, 12),
@@ -90,7 +90,7 @@ class DungeonCrawlerApp {
     missionComplete: false,
   };
   private readonly guard = {
-    pos: new THREE.Vector3(28.5, PLAYER_HEIGHT * 0.5, 12),
+    pos: new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1),
     velocity: new THREE.Vector3(),
     facing: new THREE.Vector3(0, 0, -1),
     mesh: new THREE.Group(),
@@ -98,8 +98,8 @@ class DungeonCrawlerApp {
     state: 'patrol' as GuardState,
     stateTimer: 0,
     patrolIndex: 0,
-    lastSeen: new THREE.Vector3(28.5, PLAYER_HEIGHT * 0.5, 12),
-    lastPatrolPos: new THREE.Vector3(28.5, PLAYER_HEIGHT * 0.5, 12),
+    lastSeen: new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1),
+    lastPatrolPos: new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1),
     stalledFor: 0,
   };
   private readonly key = {
@@ -140,7 +140,7 @@ class DungeonCrawlerApp {
   private readonly tmpVecB = new THREE.Vector3();
   private readonly tmpVecC = new THREE.Vector3();
   private readonly spawnPoint = new THREE.Vector3(4.5, PLAYER_HEIGHT * 0.5, 12);
-  private readonly guardSpawn = new THREE.Vector3(28.5, PLAYER_HEIGHT * 0.5, 12);
+  private readonly guardSpawn = new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1);
 
   private yaw = Math.PI;
   private pitch = -0.2;
@@ -628,10 +628,8 @@ class DungeonCrawlerApp {
     switch (this.guard.state) {
       case 'patrol': {
         const target = this.guardWaypoints[this.guard.patrolIndex];
-        this.moveGuardTowards(target, GUARD_PATROL_SPEED, delta);
-        if (this.guard.pos.distanceTo(target) < 0.3) {
-          this.guard.patrolIndex = (this.guard.patrolIndex + 1) % this.guardWaypoints.length;
-          this.guard.stalledFor = 0;
+        if (this.moveGuardAlongPatrol(target, GUARD_PATROL_SPEED, delta)) {
+          this.advanceGuardPatrol();
         }
         break;
       }
@@ -918,6 +916,38 @@ class DungeonCrawlerApp {
     this.moveBody(this.guard.pos, this.guard.velocity, GUARD_RADIUS, delta);
   }
 
+  private moveGuardAlongPatrol(target: THREE.Vector3, speed: number, delta: number): boolean {
+    const offset = target.clone().sub(this.guard.pos);
+    offset.y = 0;
+    const distance = offset.length();
+    if (distance <= 0.001) {
+      this.guard.velocity.set(0, 0, 0);
+      return true;
+    }
+
+    const direction = offset.normalize();
+    const step = Math.min(distance, speed * delta);
+    this.guard.facing.lerp(direction, 0.28).normalize();
+    this.guard.velocity.copy(direction).multiplyScalar(step / Math.max(delta, 0.0001));
+    this.guard.pos.addScaledVector(direction, step);
+    this.guard.pos.y = PLAYER_HEIGHT * 0.5;
+
+    if (distance - step > 0.24) {
+      return false;
+    }
+
+    this.guard.pos.x = target.x;
+    this.guard.pos.z = target.z;
+    this.guard.velocity.set(0, 0, 0);
+    return true;
+  }
+
+  private advanceGuardPatrol(): void {
+    this.guard.patrolIndex = (this.guard.patrolIndex + 1) % this.guardWaypoints.length;
+    this.guard.stalledFor = 0;
+    this.guard.lastPatrolPos.copy(this.guard.pos);
+  }
+
   private updateGuardPatrolRecovery(delta: number): void {
     const movedDistance = this.guard.pos.distanceTo(this.guard.lastPatrolPos);
     this.guard.lastPatrolPos.copy(this.guard.pos);
@@ -944,9 +974,8 @@ class DungeonCrawlerApp {
       return;
     }
 
-    this.guard.patrolIndex = (this.guard.patrolIndex + 1) % this.guardWaypoints.length;
     this.guard.state = 'patrol';
-    this.guard.stalledFor = 0;
+    this.advanceGuardPatrol();
     this.guard.velocity.set(0, 0, 0);
   }
 
