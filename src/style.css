@@ -78,6 +78,31 @@ canvas {
   color: #ffd479;
 }
 
+.hud,
+.status,
+.timer {
+  padding: 0.45rem 0.65rem;
+  border-radius: 0.5rem;
+  background: rgba(5, 8, 14, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.timer {
+  color: #ffe08f;
+  letter-spacing: 0.08em;
+}
+
+.timer.warning {
+  color: #ffb25c;
+  border-color: rgba(255, 170, 90, 0.35);
+}
+
+.timer.critical {
+  color: #ff7676;
+  border-color: rgba(255, 110, 110, 0.45);
+  box-shadow: 0 0 22px rgba(255, 80, 80, 0.18);
+}
+
 .prompt {
   color: #8fe3ff;
   min-height: 1.2em;
