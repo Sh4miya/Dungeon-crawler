@@ -1,10 +1,13 @@
 import './style.css';
 import * as THREE from 'three';
+import { BALANCE } from './gameBalance';
 import { findGuardPath, hasClearPath, type Rect as NavigationRect } from './guardNavigation';
 import { moveCircle, type Rect as CollisionRect } from './physics';
+import { SoundCueManager } from './soundCueManager';
 
 type PlayerState = 'idle' | 'attack' | 'block' | 'dodge';
 type GuardState = 'patrol' | 'suspicious' | 'chase' | 'return' | 'stunned';
+type HoundState = 'idle' | 'released' | 'search' | 'chase' | 'attack' | 'reset' | 'down';
 
 type WallRect = {
   minX: number;
@@ -18,6 +21,7 @@ type WallRect = {
 type UiRefs = {
   hud: HTMLDivElement;
   status: HTMLDivElement;
+  timer: HTMLDivElement;
   message: HTMLDivElement;
   objective: HTMLDivElement;
   prompt: HTMLDivElement;
@@ -25,36 +29,38 @@ type UiRefs = {
   crosshair: HTMLDivElement;
 };
 
-const WORLD_WIDTH = 36;
-const WORLD_DEPTH = 24;
-const PLAYER_RADIUS = 0.42;
-const GUARD_RADIUS = 0.42;
-const PLAYER_HEIGHT = 1.72;
-const PLAYER_MOVE_SPEED = 4.2;
-const PLAYER_DODGE_SPEED = 9.2;
-const PLAYER_DODGE_DURATION = 0.2;
-const PLAYER_DODGE_COOLDOWN = 0.95;
-const PLAYER_ATTACK_DURATION = 0.22;
-const PLAYER_ATTACK_COOLDOWN = 0.32;
-const PLAYER_MAX_HEALTH = 5;
-const PLAYER_PARRY_WINDOW = 0.18;
-const GUARD_PATROL_SPEED = 2.1;
-const GUARD_SUSPICIOUS_SPEED = 2.7;
-const GUARD_CHASE_SPEED = 3.7;
-const GUARD_RETURN_SPEED = 2.4;
-const GUARD_SIGHT_DISTANCE = 8.5;
-const GUARD_SIGHT_DISTANCE_TORCH = 13.5;
-const GUARD_CHASE_DISTANCE = 5.5;
-const GUARD_NEAR_DETECTION = 1.8;
-const GUARD_FOV = THREE.MathUtils.degToRad(82);
-const GUARD_STUN_SECONDS = 3.2;
-const CAMERA_DISTANCE = 2.35;
-const CAMERA_SHOULDER_OFFSET = 0.42;
-const CAMERA_HEIGHT = 1.68;
-const CAMERA_MIN_DISTANCE = 0.78;
-const TORCH_ON_INTENSITY = 2.8;
-const TORCH_OFF_INTENSITY = 0.85;
-const GUARD_NAV_STEP = 0.5;
+const WORLD_WIDTH = BALANCE.world.width;
+const WORLD_DEPTH = BALANCE.world.depth;
+const PLAYER_RADIUS = BALANCE.player.radius;
+const GUARD_RADIUS = BALANCE.guard.radius;
+const HOUND_RADIUS = BALANCE.guard.radius;
+const PLAYER_HEIGHT = BALANCE.player.height;
+const PLAYER_MOVE_SPEED = BALANCE.player.moveSpeed;
+const PLAYER_DODGE_SPEED = BALANCE.player.dodgeSpeed;
+const PLAYER_DODGE_DURATION = BALANCE.player.dodgeDurationSeconds;
+const PLAYER_DODGE_COOLDOWN = BALANCE.player.dodgeCooldownSeconds;
+const PLAYER_ATTACK_DURATION = BALANCE.player.attackDurationSeconds;
+const PLAYER_ATTACK_COOLDOWN = BALANCE.player.attackCooldownSeconds;
+const PLAYER_MAX_HEALTH = BALANCE.player.maxHealth;
+const PLAYER_PARRY_WINDOW = BALANCE.player.parryWindowSeconds;
+const GUARD_PATROL_SPEED = BALANCE.guard.patrolSpeed;
+const GUARD_SUSPICIOUS_SPEED = BALANCE.guard.suspiciousSpeed;
+const GUARD_CHASE_SPEED = BALANCE.guard.chaseSpeed;
+const GUARD_RETURN_SPEED = BALANCE.guard.returnSpeed;
+const GUARD_SIGHT_DISTANCE = BALANCE.guard.sightDistance;
+const GUARD_SIGHT_DISTANCE_TORCH = BALANCE.guard.sightDistanceTorch;
+const GUARD_CHASE_DISTANCE = BALANCE.guard.chaseDistance;
+const GUARD_NEAR_DETECTION = BALANCE.guard.nearDetection;
+const GUARD_FOV = THREE.MathUtils.degToRad(BALANCE.guard.fovDeg);
+const GUARD_STUN_SECONDS = BALANCE.guard.stunSeconds;
+const CAMERA_DISTANCE = BALANCE.camera.distance;
+const CAMERA_SHOULDER_OFFSET = BALANCE.camera.shoulderOffset;
+const CAMERA_HEIGHT = BALANCE.camera.height;
+const CAMERA_MIN_DISTANCE = BALANCE.camera.minDistance;
+const TORCH_ON_INTENSITY = BALANCE.torch.onIntensity;
+const TORCH_OFF_INTENSITY = BALANCE.torch.offIntensity;
+const GUARD_NAV_STEP = BALANCE.guard.navStep;
+const MESSAGE_DURATION = BALANCE.ui.messageDurationSeconds;
 
 class DungeonCrawlerApp {
   private readonly container: HTMLElement;
@@ -63,6 +69,7 @@ class DungeonCrawlerApp {
   private readonly renderer = new THREE.WebGLRenderer({ antialias: true });
   private readonly clock = new THREE.Clock();
   private readonly raycaster = new THREE.Raycaster();
+  private readonly sound = new SoundCueManager();
   private readonly ui: UiRefs;
   private readonly pressedKeys = new Set<string>();
   private readonly pointerButtons = { left: false, right: false };
@@ -70,13 +77,10 @@ class DungeonCrawlerApp {
   private readonly walls: WallRect[] = [];
   private readonly wallMeshes: THREE.Object3D[] = [];
   private readonly guardWaypoints = [
-    new THREE.Vector3(28.2, 0, 16.1),
-    new THREE.Vector3(23.6, 0, 16.1),
-    new THREE.Vector3(23.6, 0, 11.5),
-    new THREE.Vector3(28.2, 0, 11.5),
+    ...BALANCE.guard.patrolPoints.map((point) => new THREE.Vector3(point.x, 0, point.z)),
   ];
   private readonly player = {
-    pos: new THREE.Vector3(4.5, PLAYER_HEIGHT * 0.5, 12),
+    pos: new THREE.Vector3(BALANCE.player.spawn.x, PLAYER_HEIGHT * 0.5, BALANCE.player.spawn.z),
     velocity: new THREE.Vector3(),
     facing: new THREE.Vector3(0, 0, -1),
     mesh: new THREE.Group(),
@@ -89,11 +93,12 @@ class DungeonCrawlerApp {
     blockTimer: 0,
     health: PLAYER_MAX_HEALTH,
     hasKey: false,
+    hasTorch: false,
     torchOn: false,
     missionComplete: false,
   };
   private readonly guard = {
-    pos: new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1),
+    pos: new THREE.Vector3(BALANCE.guard.spawn.x, PLAYER_HEIGHT * 0.5, BALANCE.guard.spawn.z),
     velocity: new THREE.Vector3(),
     facing: new THREE.Vector3(0, 0, -1),
     mesh: new THREE.Group(),
@@ -104,6 +109,29 @@ class DungeonCrawlerApp {
     lastSeen: new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1),
     lastPatrolPos: new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1),
     stalledFor: 0,
+    footstepTimer: 0,
+  };
+  private readonly torchPickup = {
+    pos: new THREE.Vector3(BALANCE.torch.pickup.x, BALANCE.torch.pickup.y, BALANCE.torch.pickup.z),
+    mesh: new THREE.Group(),
+    active: true,
+  };
+  private readonly hound = {
+    pos: new THREE.Vector3(BALANCE.hound.spawn.x, PLAYER_HEIGHT * 0.5, BALANCE.hound.spawn.z),
+    velocity: new THREE.Vector3(),
+    facing: new THREE.Vector3(0, 0, 1),
+    mesh: new THREE.Group(),
+    body: new THREE.Mesh(),
+    state: 'idle' as HoundState,
+    stateTimer: 0,
+    attackCooldown: 0,
+    damageCooldown: 0,
+    health: BALANCE.hound.maxHealth,
+    lastSeen: new THREE.Vector3(BALANCE.hound.spawn.x, PLAYER_HEIGHT * 0.5, BALANCE.hound.spawn.z),
+    warningTimer: 0,
+    growlTimer: 0,
+    barkTimer: 0,
+    releaseTarget: new THREE.Vector3(BALANCE.hound.releaseInvestigateTarget.x, PLAYER_HEIGHT * 0.5, BALANCE.hound.releaseInvestigateTarget.z),
   };
   private readonly key = {
     pos: new THREE.Vector3(29, 0.55, 8.5),
@@ -128,6 +156,7 @@ class DungeonCrawlerApp {
   private readonly fillLight = new THREE.PointLight(0xa6d7ff, 0.75, 5.5, 2);
   private readonly doorLight = new THREE.PointLight(0xffd27a, 1.1, 5.2, 2);
   private readonly keyLight = new THREE.PointLight(0xffd27a, 1.4, 4.8, 2);
+  private readonly warningLight = new THREE.PointLight(0xff664d, 0, BALANCE.hound.warningLightRadius, 2);
   private readonly ambientLight = new THREE.AmbientLight(0x111726, 0.24);
   private readonly guardSightMaterial = new THREE.MeshBasicMaterial({
     color: 0xeac76a,
@@ -137,13 +166,22 @@ class DungeonCrawlerApp {
     depthWrite: false,
   });
   private readonly guardSightMesh = new THREE.Mesh();
+  private readonly houndSightMaterial = new THREE.MeshBasicMaterial({
+    color: 0xff6b6b,
+    transparent: true,
+    opacity: 0,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  private readonly houndSightMesh = new THREE.Mesh();
   private readonly torchTarget = new THREE.Object3D();
   private readonly interactTip = new THREE.Vector3();
   private readonly tmpVecA = new THREE.Vector3();
   private readonly tmpVecB = new THREE.Vector3();
   private readonly tmpVecC = new THREE.Vector3();
-  private readonly spawnPoint = new THREE.Vector3(4.5, PLAYER_HEIGHT * 0.5, 12);
-  private readonly guardSpawn = new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1);
+  private readonly spawnPoint = new THREE.Vector3(BALANCE.player.spawn.x, PLAYER_HEIGHT * 0.5, BALANCE.player.spawn.z);
+  private readonly guardSpawn = new THREE.Vector3(BALANCE.guard.spawn.x, PLAYER_HEIGHT * 0.5, BALANCE.guard.spawn.z);
+  private readonly houndSpawn = new THREE.Vector3(BALANCE.hound.spawn.x, PLAYER_HEIGHT * 0.5, BALANCE.hound.spawn.z);
   private readonly guardPathTarget = new THREE.Vector3();
   private readonly doorCollisionRect = { minX: 17.92, maxX: 18.48, minZ: 10.92, maxZ: 13.08 };
 
@@ -152,8 +190,10 @@ class DungeonCrawlerApp {
 
   private yaw = Math.PI;
   private pitch = -0.2;
-  private message = 'Scout report: find the brass key, then crack open the archive door.';
-  private messageTimer = 4;
+  private message = 'Scout report: find the torch and brass key, then crack open the archive door before the kennel timer hits zero.';
+  private messageTimer: number = MESSAGE_DURATION;
+  private countdownRemaining: number = BALANCE.countdown.startSeconds;
+  private houndReleased = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -209,6 +249,9 @@ class DungeonCrawlerApp {
 
     this.keyLight.position.copy(this.key.pos).add(new THREE.Vector3(0, 0.3, 0));
     this.scene.add(this.keyLight);
+
+    this.warningLight.position.copy(this.hound.pos).add(new THREE.Vector3(0, 0.35, 0));
+    this.scene.add(this.warningLight);
   }
 
   private createUi(): UiRefs {
@@ -218,10 +261,14 @@ class DungeonCrawlerApp {
     const topLeft = document.createElement('div');
     topLeft.className = 'panel top-left';
     const hud = document.createElement('div');
+    hud.className = 'hud';
     const status = document.createElement('div');
+    status.className = 'status';
+    const timer = document.createElement('div');
+    timer.className = 'timer';
     const message = document.createElement('div');
     message.className = 'message';
-    topLeft.append(hud, status, message);
+    topLeft.append(hud, status, timer, message);
 
     const topRight = document.createElement('div');
     topRight.className = 'panel top-right';
@@ -246,7 +293,7 @@ class DungeonCrawlerApp {
     overlay.append(topLeft, topRight, bottomLeft, centerHint, crosshair);
     this.container.appendChild(overlay);
 
-    return { hud, status, message, objective, prompt, controls, crosshair };
+    return { hud, status, timer, message, objective, prompt, controls, crosshair };
   }
 
   private bindEvents(): void {
@@ -281,8 +328,14 @@ class DungeonCrawlerApp {
     this.pressedKeys.add(event.code);
 
     if (event.code === 'KeyQ' && !event.repeat) {
+      if (!this.player.hasTorch) {
+        this.setMessage('No torch yet. Find something to light the hall with.');
+        return;
+      }
+
       this.player.torchOn = !this.player.torchOn;
-      this.setMessage(this.player.torchOn ? 'Torch lit. Better visibility, louder silhouette.' : 'Torch lowered. Harder to see, harder to spot.');
+      this.sound.play(this.player.torchOn ? 'torchToggleOn' : 'torchToggleOff');
+      this.setMessage(this.player.torchOn ? 'Torch lit. Better visibility, worse stealth, faster kennel countdown.' : 'Torch lowered. Harder to see, harder to spot.');
     }
   };
 
@@ -454,6 +507,13 @@ class DungeonCrawlerApp {
     this.guardSightMesh.renderOrder = 1;
     this.scene.add(this.guardSightMesh);
 
+    this.houndSightMesh.geometry = this.createSightConeGeometry(1, THREE.MathUtils.degToRad(BALANCE.hound.fovDeg));
+    this.houndSightMesh.material = this.houndSightMaterial;
+    this.houndSightMesh.rotation.x = -Math.PI / 2;
+    this.houndSightMesh.position.set(this.hound.pos.x, 0.04, this.hound.pos.z);
+    this.houndSightMesh.renderOrder = 1;
+    this.scene.add(this.houndSightMesh);
+
     this.key.mesh = new THREE.Mesh(
       new THREE.TorusKnotGeometry(0.12, 0.04, 48, 8, 2, 3),
       new THREE.MeshStandardMaterial({ color: 0xf2cc6b, emissive: 0xa67115, emissiveIntensity: 0.55, metalness: 0.6, roughness: 0.35 }),
@@ -461,6 +521,42 @@ class DungeonCrawlerApp {
     this.key.mesh.castShadow = true;
     this.key.mesh.position.copy(this.key.pos);
     this.scene.add(this.key.mesh);
+
+    const torchHandle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.09, 0.68, 10),
+      new THREE.MeshStandardMaterial({ color: 0x6f4a2b, roughness: 0.88, metalness: 0.05 }),
+    );
+    torchHandle.rotation.z = Math.PI / 2.8;
+    const torchFlame = new THREE.Mesh(
+      new THREE.SphereGeometry(0.11, 14, 14),
+      new THREE.MeshStandardMaterial({ color: 0xffd57c, emissive: 0xcc7a24, emissiveIntensity: 0.7 }),
+    );
+    torchFlame.position.set(0.26, 0.18, 0);
+    this.torchPickup.mesh = new THREE.Group();
+    this.torchPickup.mesh.add(torchHandle, torchFlame);
+    this.torchPickup.mesh.position.copy(this.torchPickup.pos);
+    this.torchPickup.mesh.rotation.y = 0.7;
+    this.scene.add(this.torchPickup.mesh);
+
+    this.hound.mesh = new THREE.Group();
+    const houndBody = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.28, 0.7, 4, 8),
+      new THREE.MeshStandardMaterial({ color: 0x8b5b55, emissive: 0x491c1a, emissiveIntensity: 0.32 }),
+    );
+    houndBody.rotation.z = Math.PI / 2;
+    houndBody.position.y = 0.44;
+    houndBody.castShadow = true;
+    const houndHead = new THREE.Mesh(
+      new THREE.BoxGeometry(0.34, 0.28, 0.3),
+      new THREE.MeshStandardMaterial({ color: 0xa87a72, roughness: 0.8, metalness: 0.04 }),
+    );
+    houndHead.position.set(0, 0.5, 0.44);
+    houndHead.castShadow = true;
+    this.hound.mesh.add(houndBody, houndHead);
+    this.hound.body = houndBody;
+    this.hound.mesh.position.copy(this.hound.pos).setY(0);
+    this.hound.mesh.visible = false;
+    this.scene.add(this.hound.mesh);
 
     const doorPanel = new THREE.Mesh(
       new THREE.BoxGeometry(0.32, 2.15, 2.2),
@@ -488,13 +584,40 @@ class DungeonCrawlerApp {
 
   private update(delta: number): void {
     this.messageTimer = Math.max(0, this.messageTimer - delta);
+    this.updateCountdown(delta);
     this.updatePlayer(delta);
     this.updateGuard(delta);
+    this.updateHound(delta);
     this.updateWorldActors(delta);
     this.updateCamera();
     this.updateUi();
     this.previousButtons.left = this.pointerButtons.left;
     this.previousButtons.right = this.pointerButtons.right;
+  }
+
+  private updateCountdown(delta: number): void {
+    if (this.player.missionComplete || this.houndReleased) {
+      return;
+    }
+
+    const drainMultiplier = this.player.hasTorch && this.player.torchOn ? BALANCE.torch.countdownDrainMultiplier : 1;
+    const previousWholeSeconds = Math.ceil(this.countdownRemaining);
+    this.countdownRemaining = Math.max(0, this.countdownRemaining - delta * drainMultiplier);
+    const currentWholeSeconds = Math.ceil(this.countdownRemaining);
+
+    if (currentWholeSeconds !== previousWholeSeconds) {
+      if (currentWholeSeconds === BALANCE.countdown.lowWarningSeconds) {
+        this.sound.play('alertTrigger');
+        this.setMessage('Kennel timer low. The halls are starting to wake up.');
+      } else if (currentWholeSeconds === BALANCE.countdown.criticalWarningSeconds) {
+        this.sound.play('alertTrigger');
+        this.setMessage('Critical timer. Expect the hound any second.');
+      }
+    }
+
+    if (this.countdownRemaining === 0) {
+      this.releaseHound();
+    }
   }
 
   private updatePlayer(delta: number): void {
@@ -590,10 +713,11 @@ class DungeonCrawlerApp {
     this.player.mesh.position.set(this.player.pos.x, 0, this.player.pos.z);
     this.player.mesh.rotation.y = Math.atan2(this.player.facing.x, this.player.facing.z);
 
-    this.torchLight.intensity = this.player.torchOn ? TORCH_ON_INTENSITY : TORCH_OFF_INTENSITY;
-    this.torchLight.distance = this.player.torchOn ? 21 : 11;
-    this.fillLight.intensity = this.player.torchOn ? 0.45 : 0.95;
-    this.fillLight.distance = this.player.torchOn ? 3.8 : 5.8;
+    const torchActive = this.player.hasTorch && this.player.torchOn;
+    this.torchLight.intensity = torchActive ? TORCH_ON_INTENSITY : TORCH_OFF_INTENSITY;
+    this.torchLight.distance = torchActive ? BALANCE.torch.onDistance : BALANCE.torch.offDistance;
+    this.fillLight.intensity = torchActive ? BALANCE.torch.fillIntensityOn : BALANCE.torch.fillIntensityOff;
+    this.fillLight.distance = torchActive ? BALANCE.torch.fillDistanceOn : BALANCE.torch.fillDistanceOff;
     this.fillLight.position.copy(this.player.pos).add(new THREE.Vector3(0, 0.55, 0));
 
     this.torchLight.position.copy(this.player.pos).add(new THREE.Vector3(0, 1.1, 0));
@@ -601,7 +725,8 @@ class DungeonCrawlerApp {
     this.torchLight.target = this.torchTarget;
 
     this.keyLight.visible = this.key.active;
-    this.keyLight.intensity = this.player.torchOn ? 1.1 : 1.5;
+    this.keyLight.intensity = torchActive ? BALANCE.torch.keyLightIntensityOn : BALANCE.torch.keyLightIntensityOff;
+    this.torchPickup.mesh.visible = this.torchPickup.active;
 
     if (this.player.health <= 0) {
       this.respawnPlayer();
@@ -615,20 +740,22 @@ class DungeonCrawlerApp {
       return;
     }
 
+    const previousState = this.guard.state;
     this.guardRepathTimer = Math.max(0, this.guardRepathTimer - delta);
     this.guard.stateTimer = Math.max(0, this.guard.stateTimer - delta);
+    this.guard.footstepTimer = Math.max(0, this.guard.footstepTimer - delta);
     const sight = this.getGuardSight();
 
     if (this.guard.state !== 'stunned') {
       if (sight.seesPlayer && sight.distance <= GUARD_CHASE_DISTANCE) {
         this.guard.state = 'chase';
-        this.guard.stateTimer = 1.2;
+        this.guard.stateTimer = BALANCE.guard.chaseMemorySeconds;
         this.guard.lastSeen.copy(this.player.pos);
       } else if (sight.seesPlayer) {
         if (this.guard.state !== 'chase') {
           this.guard.state = 'suspicious';
         }
-        this.guard.stateTimer = 1.8;
+        this.guard.stateTimer = BALANCE.guard.suspiciousDurationSeconds;
         this.guard.lastSeen.copy(this.player.pos);
       } else if (this.guard.state === 'chase' && this.guard.stateTimer === 0) {
         this.guard.state = 'return';
@@ -680,11 +807,20 @@ class DungeonCrawlerApp {
 
     if (sight.seesPlayer && sight.distance <= GUARD_NEAR_DETECTION && this.guard.state !== 'stunned') {
       this.guard.state = 'chase';
-      this.guard.stateTimer = 1.2;
+      this.guard.stateTimer = BALANCE.guard.chaseMemorySeconds;
       this.guard.lastSeen.copy(this.player.pos);
     }
 
+    if (previousState !== this.guard.state && (this.guard.state === 'suspicious' || this.guard.state === 'chase')) {
+      this.sound.play('alertTrigger');
+    }
+
     this.updateGuardPatrolRecovery(delta);
+
+    if (this.guard.velocity.lengthSq() > 0.4 && this.guard.footstepTimer === 0) {
+      this.sound.play('guardFootstep');
+      this.guard.footstepTimer = BALANCE.audio.guardFootstepIntervalSeconds;
+    }
 
     this.handleGuardContact();
     this.guard.mesh.position.set(this.guard.pos.x, 0, this.guard.pos.z);
@@ -714,6 +850,11 @@ class DungeonCrawlerApp {
     if (this.key.active) {
       this.key.mesh.rotation.y += delta * 1.7;
       this.key.mesh.position.y = this.key.pos.y + Math.sin(performance.now() * 0.003) * 0.04;
+    }
+
+    if (this.torchPickup.active) {
+      this.torchPickup.mesh.rotation.y += delta * 0.9;
+      this.torchPickup.mesh.position.y = this.torchPickup.pos.y + Math.sin(performance.now() * 0.0035) * 0.05;
     }
 
     if (!this.player.missionComplete && !this.door.locked && this.isInsideRect(this.player.pos.x, this.player.pos.z, this.exitZone)) {
@@ -756,10 +897,21 @@ class DungeonCrawlerApp {
   }
 
   private handleInteraction(): void {
+    if (this.torchPickup.active && this.player.pos.distanceTo(this.torchPickup.pos) <= BALANCE.torch.interactDistance) {
+      this.torchPickup.active = false;
+      this.player.hasTorch = true;
+      this.player.torchOn = false;
+      this.torchPickup.mesh.visible = false;
+      this.sound.play('torchPickup');
+      this.setMessage('Torch recovered. Q toggles it, but the extra light burns your timer down faster.');
+      return;
+    }
+
     if (this.key.active && this.player.pos.distanceTo(this.key.pos) <= 1.5) {
       this.key.active = false;
       this.player.hasKey = true;
       this.key.mesh.visible = false;
+      this.sound.play('keyPickup');
       this.setMessage('Key secured. Tiny chaos, maximum usefulness.');
       return;
     }
@@ -779,12 +931,17 @@ class DungeonCrawlerApp {
   private unlockDoor(): void {
     this.door.locked = false;
     this.door.mesh.visible = false;
+    this.sound.play('doorUnlock');
   }
 
   private resolveAttack(): void {
+    if (this.tryHitHound()) {
+      return;
+    }
+
     const toGuard = this.guard.pos.clone().sub(this.player.pos);
     const distance = toGuard.length();
-    if (distance > 1.8) {
+    if (distance > BALANCE.player.attackReach) {
       this.setMessage('Slash! Close, but no cigar.');
       return;
     }
@@ -793,7 +950,7 @@ class DungeonCrawlerApp {
     toGuard.normalize();
     const aimDot = THREE.MathUtils.clamp(this.player.facing.dot(toGuard), -1, 1);
     const angle = Math.acos(aimDot);
-    if (angle <= THREE.MathUtils.degToRad(55) && this.guard.state !== 'stunned') {
+    if (angle <= THREE.MathUtils.degToRad(BALANCE.player.attackArcDeg) && this.guard.state !== 'stunned') {
       this.guard.state = 'stunned';
       this.guard.stateTimer = GUARD_STUN_SECONDS;
       this.guard.velocity.set(0, 0, 0);
@@ -802,6 +959,230 @@ class DungeonCrawlerApp {
     }
 
     this.setMessage('Your swing whiffs past the helmet.');
+  }
+
+  private tryHitHound(): boolean {
+    if (!this.houndReleased || this.hound.state === 'down' || this.hound.state === 'idle') {
+      return false;
+    }
+
+    const toHound = this.hound.pos.clone().sub(this.player.pos);
+    const distance = toHound.length();
+    if (distance > BALANCE.player.attackReach) {
+      return false;
+    }
+
+    toHound.y = 0;
+    toHound.normalize();
+    const aimDot = THREE.MathUtils.clamp(this.player.facing.dot(toHound), -1, 1);
+    const angle = Math.acos(aimDot);
+    if (angle > THREE.MathUtils.degToRad(BALANCE.player.attackArcDeg)) {
+      return false;
+    }
+
+    this.hound.health -= 1;
+    this.hound.lastSeen.copy(this.player.pos);
+    if (this.hound.health <= 0) {
+      this.hound.state = 'reset';
+      this.hound.stateTimer = BALANCE.hound.recoverSeconds;
+      this.hound.mesh.visible = true;
+      this.setMessage('Hound dropped. It will drag itself back to the kennel if you keep moving.');
+    } else {
+      this.hound.state = 'chase';
+      this.hound.stateTimer = BALANCE.hound.chaseMemorySeconds;
+      this.setMessage('You clipped the hound, but it is still coming.');
+    }
+    return true;
+  }
+
+  private updateHound(delta: number): void {
+    this.hound.attackCooldown = Math.max(0, this.hound.attackCooldown - delta);
+    this.hound.damageCooldown = Math.max(0, this.hound.damageCooldown - delta);
+    this.hound.stateTimer = Math.max(0, this.hound.stateTimer - delta);
+    this.hound.growlTimer = Math.max(0, this.hound.growlTimer - delta);
+    this.hound.barkTimer = Math.max(0, this.hound.barkTimer - delta);
+
+    if (!this.houndReleased || this.player.missionComplete) {
+      this.hound.mesh.visible = false;
+      this.houndSightMaterial.opacity = 0;
+      this.warningLight.intensity = 0;
+      return;
+    }
+
+    this.hound.mesh.visible = true;
+    const sight = this.getHoundSight();
+    if (sight.seesPlayer) {
+      this.hound.lastSeen.copy(this.player.pos);
+    }
+
+    switch (this.hound.state) {
+      case 'released':
+        this.warningLight.intensity = BALANCE.hound.warningLightIntensity;
+        this.moveHoundTowards(this.hound.releaseTarget, BALANCE.hound.releasedSpeed, delta);
+        if (this.hound.stateTimer === 0 || this.hound.pos.distanceTo(this.hound.releaseTarget) < 0.6) {
+          this.hound.state = 'search';
+          this.hound.stateTimer = BALANCE.hound.searchDurationSeconds;
+        }
+        break;
+      case 'search':
+        this.warningLight.intensity = 0.8;
+        if (sight.seesPlayer) {
+          this.triggerHoundChase();
+        } else {
+          this.moveHoundTowards(this.hound.lastSeen, BALANCE.hound.searchSpeed, delta);
+          if (this.hound.stateTimer === 0) {
+            this.hound.state = 'reset';
+          }
+        }
+        break;
+      case 'chase':
+        this.warningLight.intensity = 1.1;
+        if (sight.seesPlayer) {
+          this.hound.stateTimer = BALANCE.hound.chaseMemorySeconds;
+          this.playHoundBark();
+        } else if (this.hound.stateTimer === 0) {
+          this.hound.state = 'search';
+          this.hound.stateTimer = BALANCE.hound.searchDurationSeconds;
+        }
+        this.moveHoundTowards(this.hound.lastSeen, BALANCE.hound.chaseSpeed, delta);
+        if (this.hound.pos.distanceTo(this.player.pos) <= BALANCE.hound.attackRange && this.hound.attackCooldown === 0) {
+          this.hound.state = 'attack';
+          this.hound.stateTimer = BALANCE.hound.attackDurationSeconds;
+          this.hound.attackCooldown = BALANCE.hound.attackCooldownSeconds;
+        }
+        break;
+      case 'attack':
+        this.warningLight.intensity = 1.2;
+        this.hound.velocity.set(0, 0, 0);
+        if (this.hound.stateTimer === 0) {
+          this.hound.state = sight.seesPlayer ? 'chase' : 'search';
+          this.hound.stateTimer = sight.seesPlayer ? BALANCE.hound.chaseMemorySeconds : BALANCE.hound.searchDurationSeconds;
+        }
+        break;
+      case 'reset':
+      case 'down':
+        this.warningLight.intensity = 0.45;
+        this.moveHoundTowards(this.houndSpawn, BALANCE.hound.resetSpeed, delta);
+        if (this.hound.pos.distanceTo(this.houndSpawn) <= BALANCE.hound.resetTolerance) {
+          this.resetHoundToKennel();
+        }
+        break;
+      case 'idle':
+      default:
+        this.warningLight.intensity = 0;
+        this.hound.velocity.set(0, 0, 0);
+        break;
+    }
+
+    if ((this.hound.state === 'released' || this.hound.state === 'search') && sight.seesPlayer) {
+      this.triggerHoundChase();
+    }
+
+    if (this.hound.growlTimer === 0 && this.hound.state !== 'idle') {
+      this.sound.play('houndGrowl');
+      this.hound.growlTimer = BALANCE.audio.houndGrowlIntervalSeconds;
+    }
+
+    this.handleHoundContact();
+    this.hound.mesh.position.set(this.hound.pos.x, 0, this.hound.pos.z);
+    this.hound.mesh.rotation.y = Math.atan2(this.hound.facing.x, this.hound.facing.z);
+    this.houndSightMesh.position.set(this.hound.pos.x, 0.04, this.hound.pos.z);
+    this.houndSightMesh.rotation.set(-Math.PI / 2, this.hound.mesh.rotation.y, 0);
+    this.houndSightMesh.scale.setScalar(BALANCE.hound.sightDistance / GUARD_SIGHT_DISTANCE_TORCH);
+    this.houndSightMaterial.opacity = this.hound.state === 'idle' ? 0 : sight.seesPlayer ? 0.24 : 0.12;
+    this.warningLight.position.copy(this.hound.pos).add(new THREE.Vector3(0, 0.35, 0));
+  }
+
+  private releaseHound(): void {
+    if (this.houndReleased) {
+      return;
+    }
+
+    this.houndReleased = true;
+    this.hound.health = BALANCE.hound.maxHealth;
+    this.hound.pos.copy(this.houndSpawn);
+    this.hound.lastSeen.copy(this.player.pos);
+    this.hound.state = 'released';
+    this.hound.stateTimer = BALANCE.hound.warningSeconds;
+    this.hound.mesh.visible = true;
+    this.sound.play('alertTrigger');
+    this.sound.play('houndBark');
+    this.setMessage('Timer expired. Kennel breach — hound released.');
+  }
+
+  private triggerHoundChase(): void {
+    if (this.hound.state !== 'chase') {
+      this.sound.play('alertTrigger');
+      this.playHoundBark();
+    }
+    this.hound.state = 'chase';
+    this.hound.stateTimer = BALANCE.hound.chaseMemorySeconds;
+  }
+
+  private playHoundBark(): void {
+    if (this.hound.barkTimer > 0) {
+      return;
+    }
+    this.sound.play('houndBark');
+    this.hound.barkTimer = BALANCE.audio.barkCooldownSeconds;
+  }
+
+  private getHoundSight(): { seesPlayer: boolean; distance: number } {
+    const toPlayer = this.player.pos.clone().sub(this.hound.pos);
+    toPlayer.y = 0;
+    const distance = toPlayer.length();
+    if (distance > BALANCE.hound.sightDistance) {
+      return { seesPlayer: false, distance };
+    }
+
+    const direction = toPlayer.normalize();
+    const dot = THREE.MathUtils.clamp(this.hound.facing.dot(direction), -1, 1);
+    const angle = Math.acos(dot);
+    const blocked = this.isLineBlocked(this.hound.pos.x, this.hound.pos.z, this.player.pos.x, this.player.pos.z);
+    const seesPlayer = (angle <= THREE.MathUtils.degToRad(BALANCE.hound.fovDeg) / 2 && !blocked) || distance <= BALANCE.hound.nearDetection;
+    return { seesPlayer, distance };
+  }
+
+  private moveHoundTowards(target: THREE.Vector3, speed: number, delta: number): void {
+    const velocity = target.clone().sub(this.hound.pos);
+    velocity.y = 0;
+    if (velocity.lengthSq() <= 0.0001) {
+      this.hound.velocity.set(0, 0, 0);
+      return;
+    }
+
+    velocity.normalize();
+    this.hound.facing.lerp(velocity, 0.3).normalize();
+    this.hound.velocity.copy(velocity.multiplyScalar(speed));
+    this.moveBody(this.hound.pos, this.hound.velocity, HOUND_RADIUS, delta);
+  }
+
+  private handleHoundContact(): void {
+    const distance = this.hound.pos.distanceTo(this.player.pos);
+    if (distance > PLAYER_RADIUS + HOUND_RADIUS + 0.12 || this.hound.state === 'idle' || this.hound.state === 'down') {
+      return;
+    }
+
+    if (this.player.damageCooldown > 0 || this.player.state === 'dodge' || this.hound.damageCooldown > 0) {
+      return;
+    }
+
+    this.player.health -= BALANCE.hound.damage;
+    this.player.damageCooldown = BALANCE.hound.damageCooldownSeconds;
+    this.hound.damageCooldown = BALANCE.hound.damageCooldownSeconds;
+    const knockback = this.player.pos.clone().sub(this.hound.pos).setY(0).normalize().multiplyScalar(BALANCE.player.knockbackDistance);
+    this.moveBody(this.player.pos, knockback, PLAYER_RADIUS, 1);
+    this.playHoundBark();
+    this.setMessage(`The hound tears through your guard. Health at ${Math.max(this.player.health, 0)}.`);
+  }
+
+  private resetHoundToKennel(): void {
+    this.houndReleased = false;
+    this.hound.state = 'idle';
+    this.hound.velocity.set(0, 0, 0);
+    this.hound.health = BALANCE.hound.maxHealth;
+    this.hound.mesh.visible = false;
+    this.warningLight.intensity = 0;
   }
 
   private handleGuardContact(): void {
@@ -842,9 +1223,13 @@ class DungeonCrawlerApp {
     this.player.velocity.set(0, 0, 0);
     this.player.state = 'idle';
     this.player.hasKey = false;
+    this.player.hasTorch = false;
     this.player.torchOn = false;
+    this.countdownRemaining = BALANCE.countdown.startSeconds;
     this.key.active = true;
     this.key.mesh.visible = true;
+    this.torchPickup.active = true;
+    this.torchPickup.mesh.visible = true;
     this.door.locked = true;
     this.door.mesh.visible = true;
     this.guard.pos.copy(this.guardSpawn);
@@ -855,11 +1240,19 @@ class DungeonCrawlerApp {
     this.guard.lastPatrolPos.copy(this.guard.pos);
     this.guard.stalledFor = 0;
     this.clearGuardPath();
+    this.hound.pos.copy(this.houndSpawn);
+    this.hound.velocity.set(0, 0, 0);
+    this.hound.health = BALANCE.hound.maxHealth;
+    this.hound.state = 'idle';
+    this.hound.mesh.visible = false;
+    this.houndReleased = false;
+    this.warningLight.intensity = 0;
     this.setMessage('Dragged back to the wing entrance. Try a sneakier route.');
   }
 
   private getGuardSightDistance(): number {
-    return this.player.torchOn ? GUARD_SIGHT_DISTANCE_TORCH : GUARD_SIGHT_DISTANCE;
+    const baseSight = this.player.hasTorch && this.player.torchOn ? GUARD_SIGHT_DISTANCE_TORCH : GUARD_SIGHT_DISTANCE;
+    return this.player.hasTorch && this.player.torchOn ? baseSight * BALANCE.torch.guardExposureMultiplier : baseSight;
   }
 
   private getGuardSight(): { seesPlayer: boolean; distance: number } {
@@ -1062,16 +1455,36 @@ class DungeonCrawlerApp {
       return: 'resetting',
       stunned: 'stunned',
     };
+    const houndLabel: Record<HoundState, string> = {
+      idle: 'kenneled',
+      released: 'released',
+      search: 'searching',
+      chase: 'chasing',
+      attack: 'attacking',
+      reset: 'resetting',
+      down: 'down',
+    };
+    const remainingSeconds = Math.ceil(this.countdownRemaining);
+    const minutes = Math.floor(remainingSeconds / 60)
+      .toString()
+      .padStart(2, '0');
+    const seconds = (remainingSeconds % 60).toString().padStart(2, '0');
 
-    this.ui.hud.textContent = `HP ${'♥'.repeat(this.player.health)}${'·'.repeat(PLAYER_MAX_HEALTH - this.player.health)}  •  Key ${this.player.hasKey ? 'yes' : 'no'}  •  Dodge ${this.player.dodgeCooldown > 0 ? this.player.dodgeCooldown.toFixed(1) : 'ready'}  •  Torch ${this.player.torchOn ? 'on' : 'off'}`;
-    this.ui.status.textContent = `Guard ${guardLabel[this.guard.state]}  •  Sight ${this.getGuardSightDistance().toFixed(1)}m  •  Player ${this.player.state}`;
+    this.ui.hud.textContent = `HP ${'♥'.repeat(Math.max(this.player.health, 0))}${'·'.repeat(Math.max(0, PLAYER_MAX_HEALTH - this.player.health))}  •  Key ${this.player.hasKey ? 'yes' : 'no'}  •  Torch ${this.player.hasTorch ? (this.player.torchOn ? 'lit' : 'carried') : 'missing'}  •  Dodge ${this.player.dodgeCooldown > 0 ? this.player.dodgeCooldown.toFixed(1) : 'ready'}`;
+    this.ui.status.textContent = `Guard ${guardLabel[this.guard.state]}  •  Hound ${houndLabel[this.hound.state]}  •  Player ${this.player.state}`;
+    this.ui.timer.textContent = `KENNEL TIMER ${minutes}:${seconds}${this.player.hasTorch && this.player.torchOn ? '  •  drain x1.65' : ''}`;
+    this.ui.timer.className = `timer${remainingSeconds <= BALANCE.countdown.criticalWarningSeconds ? ' critical' : remainingSeconds <= BALANCE.countdown.lowWarningSeconds ? ' warning' : ''}`;
     this.ui.message.textContent = this.messageTimer > 0 ? this.message : '';
-    this.ui.objective.textContent = this.player.missionComplete ? 'Archive breached — shoulder slice clear.' : 'Objective: key → door → archive';
+    this.ui.objective.textContent = this.player.missionComplete ? 'Archive breached — shoulder slice clear.' : 'Objective: torch → key → door → archive';
     this.ui.prompt.textContent = this.getPromptText();
-    this.ui.controls.textContent = 'Shoulder camera sits tighter now. The guard loops a short hallway patrol, the floor cone shows current sight range, and your torch stretches that cone.';
+    this.ui.controls.textContent = 'Torch widens your view but worsens stealth and drains the kennel timer faster. The guard still plays the main stealth/combat loop; the hound punishes running out the clock.';
   }
 
   private getPromptText(): string {
+    if (this.torchPickup.active && this.player.pos.distanceTo(this.torchPickup.pos) <= BALANCE.torch.interactDistance) {
+      return 'Press E or F to recover the torch.';
+    }
+
     if (this.key.active && this.player.pos.distanceTo(this.key.pos) <= 1.5) {
       return 'Press E or F to grab the brass key.';
     }
@@ -1087,12 +1500,20 @@ class DungeonCrawlerApp {
       return 'Archive door is open. Slip inside.';
     }
 
-    return '';
+    if (!this.player.hasTorch) {
+      return 'No torch. Stay cool and search the side halls.';
+    }
+
+    if (!this.player.hasKey) {
+      return 'Torch found. Now get the brass key before the timer runs out.';
+    }
+
+    return this.houndReleased ? 'The hound is loose. Break line of sight or finish the run.' : '';
   }
 
   private setMessage(message: string): void {
     this.message = message;
-    this.messageTimer = 3.1;
+    this.messageTimer = MESSAGE_DURATION;
   }
 }
 
