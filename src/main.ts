@@ -776,6 +776,17 @@ class DungeonCrawlerApp {
     }
   }
 
+  private toggleTorch(): void {
+    if (!this.hasTorch) {
+      this.setMessage('No torch in the kit yet.');
+      return;
+    }
+
+    this.torchEquipped = !this.torchEquipped;
+    this.soundCues.play(this.torchEquipped ? 'torchToggleOn' : 'torchToggleOff');
+    this.setMessage(this.torchEquipped ? 'Torch up. Vision widens, the clock snarls.' : 'Torch down. Harder to see, harder to track.');
+  }
+
   private unlockDoor(): void {
     this.door.locked = false;
     this.door.mesh.visible = false;
@@ -801,7 +812,54 @@ class DungeonCrawlerApp {
       return;
     }
 
-    this.setMessage('Your swing whiffs past the helmet.');
+    this.setMessage('Slash! Close, but no cigar.');
+  }
+
+  private tryAttackEnemy(
+    enemy: Phaser.Physics.Arcade.Sprite,
+    facing: Phaser.Math.Vector2,
+    active: boolean,
+    enemyType: 'guard' | 'hound',
+  ): boolean {
+    if (!active) {
+      return false;
+    }
+
+    const toEnemy = new Phaser.Math.Vector2(enemy.x - this.player.x, enemy.y - this.player.y);
+    const distance = toEnemy.length();
+    if (distance > BALANCE.player.attackReach) {
+      return false;
+    }
+
+    toEnemy.normalize();
+    const aimDot = Phaser.Math.Clamp(this.playerFacing.dot(toEnemy), -1, 1);
+    const angle = Math.acos(aimDot);
+    if (angle > Phaser.Math.DegToRad(BALANCE.player.attackArcDeg)) {
+      return false;
+    }
+
+    if (enemyType === 'guard') {
+      if (this.guardState !== GuardState.Stunned) {
+        this.setGuardState(GuardState.Stunned, this.time.now, BALANCE.guard.stunMs);
+        this.guard.setVelocity(0, 0);
+        this.setMessage('Clean hit. Guard staggered.');
+      }
+      return true;
+    }
+
+    this.houndHealth -= 1;
+    if (this.houndHealth <= 0) {
+      this.setHoundState(HoundState.Reset, this.time.now, BALANCE.hound.recoverMs);
+      this.resetHoundToKennel();
+      this.setMessage('Hound dropped. It will recover, but you bought breathing room.');
+    } else {
+      this.houndLastSeen.set(this.player.x, this.player.y);
+      this.setHoundState(HoundState.Search, this.time.now, BALANCE.hound.searchDurationMs);
+      enemy.setVelocity((enemy.x - this.player.x) * 1.8, (enemy.y - this.player.y) * 1.8);
+      this.setMessage('The hound yelps and circles back. One more hit will floor it.');
+    }
+
+    return true;
   }
 
   private handleGuardContact(): void {
@@ -1088,6 +1146,15 @@ class DungeonCrawlerApp {
     }
 
     return '';
+  }
+
+  private formatCountdown(ms: number): string {
+    const totalSeconds = Math.ceil(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60)
+      .toString()
+      .padStart(2, '0');
+    const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+    return `${minutes}:${seconds}`;
   }
 
   private setMessage(message: string): void {
