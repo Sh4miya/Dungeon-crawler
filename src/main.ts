@@ -1,5 +1,6 @@
 import './style.css';
 import * as THREE from 'three';
+import { findGuardPath, hasClearPath, type Rect as NavigationRect } from './guardNavigation';
 
 type PlayerState = 'idle' | 'attack' | 'block' | 'dodge';
 type GuardState = 'patrol' | 'suspicious' | 'chase' | 'return' | 'stunned';
@@ -52,6 +53,7 @@ const CAMERA_HEIGHT = 1.68;
 const CAMERA_MIN_DISTANCE = 0.78;
 const TORCH_ON_INTENSITY = 2.8;
 const TORCH_OFF_INTENSITY = 0.85;
+const GUARD_NAV_STEP = 0.5;
 
 class DungeonCrawlerApp {
   private readonly container: HTMLElement;
@@ -141,6 +143,11 @@ class DungeonCrawlerApp {
   private readonly tmpVecC = new THREE.Vector3();
   private readonly spawnPoint = new THREE.Vector3(4.5, PLAYER_HEIGHT * 0.5, 12);
   private readonly guardSpawn = new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1);
+  private readonly guardPathTarget = new THREE.Vector3();
+  private readonly doorCollisionRect = { minX: 17.92, maxX: 18.48, minZ: 10.92, maxZ: 13.08 };
+
+  private guardPath: Array<{ x: number; z: number }> = [];
+  private guardRepathTimer = 0;
 
   private yaw = Math.PI;
   private pitch = -0.2;
@@ -603,9 +610,11 @@ class DungeonCrawlerApp {
   private updateGuard(delta: number): void {
     if (this.player.missionComplete) {
       this.guard.velocity.set(0, 0, 0);
+      this.clearGuardPath();
       return;
     }
 
+    this.guardRepathTimer = Math.max(0, this.guardRepathTimer - delta);
     this.guard.stateTimer = Math.max(0, this.guard.stateTimer - delta);
     const sight = this.getGuardSight();
 
@@ -628,7 +637,8 @@ class DungeonCrawlerApp {
     switch (this.guard.state) {
       case 'patrol': {
         const target = this.guardWaypoints[this.guard.patrolIndex];
-        if (this.moveGuardAlongPatrol(target, GUARD_PATROL_SPEED, delta)) {
+        this.moveGuardTowards(target, GUARD_PATROL_SPEED, delta);
+        if (this.guard.pos.distanceTo(target) < 0.3) {
           this.advanceGuardPatrol();
         }
         break;
@@ -659,6 +669,7 @@ class DungeonCrawlerApp {
       }
       case 'stunned': {
         this.guard.velocity.set(0, 0, 0);
+        this.clearGuardPath();
         if (this.guard.stateTimer === 0) {
           this.guard.state = 'return';
         }
@@ -843,6 +854,7 @@ class DungeonCrawlerApp {
     this.guard.patrolIndex = 0;
     this.guard.lastPatrolPos.copy(this.guard.pos);
     this.guard.stalledFor = 0;
+    this.clearGuardPath();
     this.setMessage('Dragged back to the wing entrance. Try a sneakier route.');
   }
 
@@ -903,7 +915,8 @@ class DungeonCrawlerApp {
   }
 
   private moveGuardTowards(target: THREE.Vector3, speed: number, delta: number): void {
-    const velocity = target.clone().sub(this.guard.pos);
+    const navigationTarget = this.getGuardNavigationTarget(target);
+    const velocity = navigationTarget.clone().sub(this.guard.pos);
     velocity.y = 0;
     if (velocity.lengthSq() <= 0.0001) {
       this.guard.velocity.set(0, 0, 0);
@@ -916,30 +929,66 @@ class DungeonCrawlerApp {
     this.moveBody(this.guard.pos, this.guard.velocity, GUARD_RADIUS, delta);
   }
 
-  private moveGuardAlongPatrol(target: THREE.Vector3, speed: number, delta: number): boolean {
-    const offset = target.clone().sub(this.guard.pos);
-    offset.y = 0;
-    const distance = offset.length();
-    if (distance <= 0.001) {
-      this.guard.velocity.set(0, 0, 0);
-      return true;
+  private getGuardNavigationTarget(target: THREE.Vector3): THREE.Vector3 {
+    const start = { x: this.guard.pos.x, z: this.guard.pos.z };
+    const destination = { x: target.x, z: target.z };
+    const walls = this.getNavigationWalls();
+
+    if (hasClearPath(start, destination, walls, GUARD_RADIUS)) {
+      this.clearGuardPath();
+      return target;
     }
 
-    const direction = offset.normalize();
-    const step = Math.min(distance, speed * delta);
-    this.guard.facing.lerp(direction, 0.28).normalize();
-    this.guard.velocity.copy(direction).multiplyScalar(step / Math.max(delta, 0.0001));
-    this.guard.pos.addScaledVector(direction, step);
-    this.guard.pos.y = PLAYER_HEIGHT * 0.5;
-
-    if (distance - step > 0.24) {
-      return false;
+    const targetMoved = this.guardPathTarget.distanceToSquared(target) > 0.36;
+    if (targetMoved || this.guardRepathTimer === 0 || this.guardPath.length === 0) {
+      this.guardPath = findGuardPath({
+        start,
+        target: destination,
+        walls,
+        radius: GUARD_RADIUS,
+        bounds: { minX: 0, maxX: WORLD_WIDTH, minZ: 0, maxZ: WORLD_DEPTH },
+        step: GUARD_NAV_STEP,
+      });
+      this.guardPathTarget.copy(target);
+      this.guardRepathTimer = this.guard.state === 'chase' ? 0.18 : 0.4;
     }
 
-    this.guard.pos.x = target.x;
-    this.guard.pos.z = target.z;
-    this.guard.velocity.set(0, 0, 0);
-    return true;
+    while (this.guardPath.length > 0) {
+      const next = this.guardPath[0];
+      const distance = Math.hypot(next.x - this.guard.pos.x, next.z - this.guard.pos.z);
+      if (distance > 0.3) {
+        break;
+      }
+      this.guardPath.shift();
+    }
+
+    if (this.guardPath.length === 0) {
+      return target;
+    }
+
+    const waypoint = this.guardPath[0];
+    return this.tmpVecA.set(waypoint.x, target.y, waypoint.z);
+  }
+
+  private getNavigationWalls(): NavigationRect[] {
+    const walls = this.walls.map<NavigationRect>((wall) => ({
+      minX: wall.minX,
+      maxX: wall.maxX,
+      minZ: wall.minZ,
+      maxZ: wall.maxZ,
+    }));
+
+    if (this.door.locked) {
+      walls.push(this.doorCollisionRect);
+    }
+
+    return walls;
+  }
+
+  private clearGuardPath(): void {
+    this.guardPath = [];
+    this.guardRepathTimer = 0;
+    this.guardPathTarget.set(Number.POSITIVE_INFINITY, 0, Number.POSITIVE_INFINITY);
   }
 
   private advanceGuardPatrol(): void {
@@ -1012,9 +1061,8 @@ class DungeonCrawlerApp {
       return;
     }
 
-    const doorRect = { minX: 17.92, maxX: 18.48, minZ: 10.92, maxZ: 13.08 };
-    const closestX = THREE.MathUtils.clamp(position.x, doorRect.minX, doorRect.maxX);
-    const closestZ = THREE.MathUtils.clamp(position.z, doorRect.minZ, doorRect.maxZ);
+    const closestX = THREE.MathUtils.clamp(position.x, this.doorCollisionRect.minX, this.doorCollisionRect.maxX);
+    const closestZ = THREE.MathUtils.clamp(position.z, this.doorCollisionRect.minZ, this.doorCollisionRect.maxZ);
     const dx = position.x - closestX;
     const dz = position.z - closestZ;
     const distanceSq = dx * dx + dz * dz;
