@@ -46,9 +46,9 @@ const GUARD_CHASE_DISTANCE = 5.5;
 const GUARD_NEAR_DETECTION = 1.8;
 const GUARD_FOV = THREE.MathUtils.degToRad(82);
 const GUARD_STUN_SECONDS = 3.2;
-const CAMERA_DISTANCE = 4.2;
-const CAMERA_SHOULDER_OFFSET = 0.8;
-const CAMERA_HEIGHT = 2.2;
+const CAMERA_DISTANCE = 3.6;
+const CAMERA_SHOULDER_OFFSET = 0.72;
+const CAMERA_HEIGHT = 2.02;
 const CAMERA_MIN_DISTANCE = 1.2;
 const TORCH_ON_INTENSITY = 2.8;
 const TORCH_OFF_INTENSITY = 0.85;
@@ -67,12 +67,12 @@ class DungeonCrawlerApp {
   private readonly walls: WallRect[] = [];
   private readonly wallMeshes: THREE.Object3D[] = [];
   private readonly guardWaypoints = [
-    new THREE.Vector3(23.5, 0, 15.5),
-    new THREE.Vector3(28.5, 0, 15.5),
-    new THREE.Vector3(28.5, 0, 8.5),
-    new THREE.Vector3(30.5, 0, 8.5),
-    new THREE.Vector3(28.5, 0, 8.5),
-    new THREE.Vector3(28.5, 0, 15.5),
+    new THREE.Vector3(24, 0, 15.5),
+    new THREE.Vector3(28.4, 0, 15.4),
+    new THREE.Vector3(26.1, 0, 10.8),
+    new THREE.Vector3(23.8, 0, 8.6),
+    new THREE.Vector3(26.1, 0, 10.8),
+    new THREE.Vector3(28.4, 0, 15.4),
   ];
   private readonly player = {
     pos: new THREE.Vector3(4.5, PLAYER_HEIGHT * 0.5, 12),
@@ -126,6 +126,14 @@ class DungeonCrawlerApp {
   private readonly doorLight = new THREE.PointLight(0xffd27a, 1.1, 5.2, 2);
   private readonly keyLight = new THREE.PointLight(0xffd27a, 1.4, 4.8, 2);
   private readonly ambientLight = new THREE.AmbientLight(0x111726, 0.24);
+  private readonly guardSightMaterial = new THREE.MeshBasicMaterial({
+    color: 0xeac76a,
+    transparent: true,
+    opacity: 0.16,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  private readonly guardSightMesh = new THREE.Mesh();
   private readonly torchTarget = new THREE.Object3D();
   private readonly interactTip = new THREE.Vector3();
   private readonly tmpVecA = new THREE.Vector3();
@@ -387,6 +395,19 @@ class DungeonCrawlerApp {
     this.scene.add(exitMarker);
   }
 
+  private createSightConeGeometry(radius: number, fov: number, segments = 40): THREE.ShapeGeometry {
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 0);
+
+    for (let index = 0; index <= segments; index += 1) {
+      const angle = -fov * 0.5 + (fov * index) / segments;
+      shape.lineTo(Math.sin(angle) * radius, Math.cos(angle) * radius);
+    }
+
+    shape.lineTo(0, 0);
+    return new THREE.ShapeGeometry(shape);
+  }
+
   private createActors(): void {
     this.player.mesh = new THREE.Group();
     const playerBody = new THREE.Mesh(
@@ -417,6 +438,13 @@ class DungeonCrawlerApp {
     this.guard.body = guardBody;
     this.guard.mesh.position.copy(this.guard.pos).setY(0);
     this.scene.add(this.guard.mesh);
+
+    this.guardSightMesh.geometry = this.createSightConeGeometry(1, GUARD_FOV);
+    this.guardSightMesh.material = this.guardSightMaterial;
+    this.guardSightMesh.rotation.x = -Math.PI / 2;
+    this.guardSightMesh.position.set(this.guard.pos.x, 0.04, this.guard.pos.z);
+    this.guardSightMesh.renderOrder = 1;
+    this.scene.add(this.guardSightMesh);
 
     this.key.mesh = new THREE.Mesh(
       new THREE.TorusKnotGeometry(0.12, 0.04, 48, 8, 2, 3),
@@ -648,6 +676,11 @@ class DungeonCrawlerApp {
     this.guard.mesh.position.set(this.guard.pos.x, 0, this.guard.pos.z);
     this.guard.mesh.rotation.y = Math.atan2(this.guard.facing.x, this.guard.facing.z);
 
+    const currentSightDistance = this.getGuardSightDistance();
+    this.guardSightMesh.position.set(this.guard.pos.x, 0.04, this.guard.pos.z);
+    this.guardSightMesh.rotation.set(-Math.PI / 2, this.guard.mesh.rotation.y, 0);
+    this.guardSightMesh.scale.setScalar(currentSightDistance / GUARD_SIGHT_DISTANCE_TORCH);
+
     const guardMaterial = this.guard.body.material as THREE.MeshStandardMaterial;
     const colorByState: Record<GuardState, number> = {
       patrol: 0xce526a,
@@ -657,6 +690,10 @@ class DungeonCrawlerApp {
       stunned: 0x7bd8ff,
     };
     guardMaterial.color.setHex(colorByState[this.guard.state]);
+
+    const sightColor = sight.seesPlayer ? 0xff6b6b : this.guard.state === 'chase' || this.guard.state === 'suspicious' ? 0xf0a93e : 0xeac76a;
+    this.guardSightMaterial.color.setHex(sightColor);
+    this.guardSightMaterial.opacity = sight.seesPlayer ? 0.3 : this.guard.state === 'chase' ? 0.24 : 0.16;
   }
 
   private updateWorldActors(delta: number): void {
@@ -805,11 +842,15 @@ class DungeonCrawlerApp {
     this.setMessage('Dragged back to the wing entrance. Try a sneakier route.');
   }
 
+  private getGuardSightDistance(): number {
+    return this.player.torchOn ? GUARD_SIGHT_DISTANCE_TORCH : GUARD_SIGHT_DISTANCE;
+  }
+
   private getGuardSight(): { seesPlayer: boolean; distance: number } {
     const toPlayer = this.player.pos.clone().sub(this.guard.pos);
     toPlayer.y = 0;
     const distance = toPlayer.length();
-    const detectionDistance = this.player.torchOn ? GUARD_SIGHT_DISTANCE_TORCH : GUARD_SIGHT_DISTANCE;
+    const detectionDistance = this.getGuardSightDistance();
     if (distance > detectionDistance) {
       return { seesPlayer: false, distance };
     }
@@ -937,11 +978,11 @@ class DungeonCrawlerApp {
     };
 
     this.ui.hud.textContent = `HP ${'♥'.repeat(this.player.health)}${'·'.repeat(PLAYER_MAX_HEALTH - this.player.health)}  •  Key ${this.player.hasKey ? 'yes' : 'no'}  •  Dodge ${this.player.dodgeCooldown > 0 ? this.player.dodgeCooldown.toFixed(1) : 'ready'}  •  Torch ${this.player.torchOn ? 'on' : 'off'}`;
-    this.ui.status.textContent = `Guard ${guardLabel[this.guard.state]}  •  Player ${this.player.state}`;
+    this.ui.status.textContent = `Guard ${guardLabel[this.guard.state]}  •  Sight ${this.getGuardSightDistance().toFixed(1)}m  •  Player ${this.player.state}`;
     this.ui.message.textContent = this.messageTimer > 0 ? this.message : '';
     this.ui.objective.textContent = this.player.missionComplete ? 'Archive breached — shoulder slice clear.' : 'Objective: key → door → archive';
     this.ui.prompt.textContent = this.getPromptText();
-    this.ui.controls.textContent = 'Shoulder camera uses mouse look with obstruction push-in. Torch boosts visibility, but extends guard sight range.';
+    this.ui.controls.textContent = 'Shoulder camera sits closer now. The floor cone shows the guard\'s current sight range, and your torch makes that cone longer.';
   }
 
   private getPromptText(): string {
