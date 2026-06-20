@@ -164,6 +164,43 @@ canvas {
   transform: translate(-50%, -50%);
 }
 
+.minimap-frame {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  width: 240px;
+  padding: 0.75rem;
+  border-radius: 0.85rem;
+  background: rgba(7, 10, 16, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.minimap-frame.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.minimap-title {
+  margin-bottom: 0.45rem;
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', ui-monospace, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #dfe7f7;
+}
+
+.minimap-canvas {
+  width: 100%;
+  height: auto;
+  border-radius: 0.55rem;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(6, 8, 14, 0.96);
+}
+
 @media (max-width: 720px) {
   #app {
     width: 100vw;
@@ -175,5 +212,11 @@ canvas {
     width: calc(100% - 2rem);
     border-radius: 1rem;
     text-align: center;
+  }
+
+  .minimap-frame {
+    width: min(220px, calc(100vw - 1.5rem));
+    right: 0.75rem;
+    bottom: 0.75rem;
   }
 }

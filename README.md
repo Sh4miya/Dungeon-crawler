@@ -1,6 +1,6 @@
 # Dungeon Crawler Prototype
 
-Small browser vertical slice for the prison wing milestone, now rebuilt as an **over-the-shoulder Three.js prototype**.
+Small browser vertical slice for the prison wing milestone, now rebuilt as an **over-the-shoulder Three.js prototype** with an authored content slice.
 
 ## What is in the build
 
@@ -12,10 +12,13 @@ Small browser vertical slice for the prison wing milestone, now rebuilt as an **
 - Space dodge with cooldown and brief invulnerability
 - Toggle torch on `Q` for visibility-vs-detection risk
 - One guard with patrol, suspicious, chase, stun, and reset behavior
+- Five authored prisoner interactions: helper, coward, informant, hostile, and silent
+- Hold-`TAB` minimap showing discovered rooms, locked doors, and objective hints only
+- First weapon progression: weak bare-handed attacks upgrade into a recovered shiv
 - One key + one locked archive door
 - `E` or `F` interaction prompt flow
 - HUD for health, guard alert, key state, dodge cooldown, and torch state
-- Small prison-wing corridor loop ending in an archive exit zone
+- 5-7 room prison-wing loop ending in an exit gate placeholder
 - Engine decision notes in `docs/over-the-shoulder-spike.md`
 
 ## Run locally
@@ -42,10 +45,11 @@ npm run build
 4. Left click near the guard to test melee stagger.
 5. Hold right click to block; click it just before contact to parry and stun.
 6. Press `Space` to dodge and confirm the cooldown updates in the HUD.
-7. Press `Q` to toggle the torch.
-8. Sneak past the guard, collect the brass key, and return to the locked door.
-9. Press `E` or `F` at the door to unlock it.
-10. Walk into the archive chamber to complete the prototype loop.
+7. Press `Q` to toggle the torch and hold `Tab` for the discovered-room minimap.
+8. Work through the authored prisoner encounters to get route clues and framed-player story beats.
+9. Recover the barracks shiv, grab the brass key, and return to the locked gate.
+10. Press `E` or `F` at the gate to unlock it.
+11. Walk into the exit chamber to complete the prototype loop.
 
 ## Playtest goals
 

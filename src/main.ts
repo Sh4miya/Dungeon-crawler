@@ -8,6 +8,46 @@ import { SoundCueManager } from './soundCueManager';
 type PlayerState = 'idle' | 'attack' | 'block' | 'dodge';
 type GuardState = 'patrol' | 'suspicious' | 'chase' | 'return' | 'stunned';
 type HoundState = 'idle' | 'released' | 'search' | 'chase' | 'attack' | 'reset' | 'down';
+type RoomId = 'cell-block' | 'maintenance-tunnel' | 'informant-nook' | 'warden-approach' | 'barracks-key-room' | 'kennel-edge' | 'exit-gate';
+type PrisonerRole = 'helper' | 'coward' | 'informant' | 'hostile' | 'silent';
+type ObjectiveHintId = 'locked-exit' | 'weapon' | 'key' | 'frame' | 'kennel';
+
+type RoomDefinition = {
+  id: RoomId;
+  name: string;
+  minimapLabel: string;
+  discoverMessage: string;
+  color: number;
+  rect: { minX: number; maxX: number; minZ: number; maxZ: number };
+};
+
+type PrisonerState = {
+  id: string;
+  role: PrisonerRole;
+  label: string;
+  roomId: RoomId;
+  pos: THREE.Vector3;
+  mesh: THREE.Group;
+  interacted: boolean;
+  active: boolean;
+};
+
+type NotePickup = {
+  id: string;
+  title: string;
+  roomId: RoomId;
+  pos: THREE.Vector3;
+  text: string;
+  mesh: THREE.Mesh;
+  active: boolean;
+};
+
+type MinimapDoor = {
+  x: number;
+  z: number;
+  axis: 'vertical' | 'horizontal';
+  rooms: [RoomId, RoomId];
+};
 
 type WallRect = {
   minX: number;
@@ -27,6 +67,8 @@ type UiRefs = {
   prompt: HTMLDivElement;
   controls: HTMLDivElement;
   crosshair: HTMLDivElement;
+  minimapFrame: HTMLDivElement;
+  minimapCanvas: HTMLCanvasElement;
 };
 
 const WORLD_WIDTH = BALANCE.world.width;
@@ -91,9 +133,10 @@ class DungeonCrawlerApp {
     dodgeCooldown: 0,
     damageCooldown: 0,
     blockTimer: 0,
-    health: PLAYER_MAX_HEALTH,
+    health: PLAYER_MAX_HEALTH as number,
     hasKey: false,
     hasTorch: false,
+    hasWeapon: false,
     torchOn: false,
     missionComplete: false,
   };
@@ -126,7 +169,7 @@ class DungeonCrawlerApp {
     stateTimer: 0,
     attackCooldown: 0,
     damageCooldown: 0,
-    health: BALANCE.hound.maxHealth,
+    health: BALANCE.hound.maxHealth as number,
     lastSeen: new THREE.Vector3(BALANCE.hound.spawn.x, PLAYER_HEIGHT * 0.5, BALANCE.hound.spawn.z),
     warningTimer: 0,
     growlTimer: 0,
@@ -149,9 +192,105 @@ class DungeonCrawlerApp {
     minZ: 10,
     maxZ: 14,
   };
-  private readonly minimap = {
-    mesh: new THREE.Mesh(),
+  private readonly minimapDoors: MinimapDoor[] = [
+    { x: 10.2, z: 12, axis: 'vertical', rooms: ['cell-block', 'informant-nook'] },
+    { x: 18.2, z: 12, axis: 'vertical', rooms: ['warden-approach', 'exit-gate'] },
+    { x: 22.2, z: 10, axis: 'horizontal', rooms: ['barracks-key-room', 'kennel-edge'] },
+    { x: 18.2, z: 16, axis: 'vertical', rooms: ['maintenance-tunnel', 'kennel-edge'] },
+  ];
+  private readonly rooms: RoomDefinition[] = [
+    {
+      id: 'cell-block',
+      name: 'Cell Block',
+      minimapLabel: 'CB',
+      discoverMessage: 'Cell block mapped. Shackles, bars, and one suspiciously helpful prisoner.',
+      color: 0x4e6785,
+      rect: { minX: 1.2, maxX: 10.1, minZ: 8.2, maxZ: 17.8 },
+    },
+    {
+      id: 'maintenance-tunnel',
+      name: 'Maintenance Tunnel',
+      minimapLabel: 'MT',
+      discoverMessage: 'Maintenance tunnel found. Narrow route, easy to read, easy to get cornered.',
+      color: 0x697e63,
+      rect: { minX: 10.2, maxX: 21.8, minZ: 14.2, maxZ: 19.9 },
+    },
+    {
+      id: 'informant-nook',
+      name: 'Informant Nook',
+      minimapLabel: 'IN',
+      discoverMessage: 'Informant nook discovered. Somebody has been whispering through the bars.',
+      color: 0x7b5f84,
+      rect: { minX: 10.4, maxX: 17.8, minZ: 6.8, maxZ: 17.1 },
+    },
+    {
+      id: 'warden-approach',
+      name: 'Warden Wing Approach',
+      minimapLabel: 'WW',
+      discoverMessage: 'Warden approach marked. The locked gate is close enough to taste.',
+      color: 0x8b684d,
+      rect: { minX: 17.9, maxX: 22.1, minZ: 9.8, maxZ: 17.3 },
+    },
+    {
+      id: 'barracks-key-room',
+      name: 'Barracks Key Room',
+      minimapLabel: 'BK',
+      discoverMessage: 'Barracks reached. That is where the guards stash anything pointy and useful.',
+      color: 0x7f7b57,
+      rect: { minX: 22.3, maxX: 29.2, minZ: 6.6, maxZ: 9.9 },
+    },
+    {
+      id: 'kennel-edge',
+      name: 'Kennel Edge',
+      minimapLabel: 'KE',
+      discoverMessage: 'Kennel edge scoped. More noise, more risk, more reason to move fast.',
+      color: 0x804d4d,
+      rect: { minX: 22.2, maxX: 29.2, minZ: 9.9, maxZ: 17.6 },
+    },
+    {
+      id: 'exit-gate',
+      name: 'Exit Gate Placeholder',
+      minimapLabel: 'EG',
+      discoverMessage: 'Exit gate chamber sighted. One locked threshold between you and daylight.',
+      color: 0x537d73,
+      rect: { minX: 11.3, maxX: 16.1, minZ: 9.8, maxZ: 14.3 },
+    },
+  ];
+  private readonly weapon = {
+    pos: new THREE.Vector3(24.6, 0.5, 8),
+    mesh: new THREE.Group(),
+    active: true,
   };
+  private readonly notePickups: NotePickup[] = [
+    {
+      id: 'ledger-scrap',
+      title: 'Ledger Scrap',
+      roomId: 'cell-block',
+      pos: new THREE.Vector3(6.6, 0.42, 15.1),
+      text: 'Transfer order 7B: use the thief cover story. The seal was forged after intake.',
+      mesh: new THREE.Mesh(),
+      active: true,
+    },
+    {
+      id: 'barracks-order',
+      title: 'Barracks Order',
+      roomId: 'barracks-key-room',
+      pos: new THREE.Vector3(27.6, 0.42, 7.3),
+      text: 'Confiscated shiv moved with the brass key. Keep the framed prisoner isolated until the magistrate arrives.',
+      mesh: new THREE.Mesh(),
+      active: true,
+    },
+  ];
+  private readonly prisoners: PrisonerState[] = [
+    { id: 'helper', role: 'helper', label: 'Helper', roomId: 'cell-block', pos: new THREE.Vector3(3.8, 0, 12.3), mesh: new THREE.Group(), interacted: false, active: true },
+    { id: 'coward', role: 'coward', label: 'Coward', roomId: 'maintenance-tunnel', pos: new THREE.Vector3(15.3, 0, 16.4), mesh: new THREE.Group(), interacted: false, active: true },
+    { id: 'informant', role: 'informant', label: 'Informant', roomId: 'informant-nook', pos: new THREE.Vector3(13.4, 0, 8.5), mesh: new THREE.Group(), interacted: false, active: true },
+    { id: 'hostile', role: 'hostile', label: 'Hostile', roomId: 'kennel-edge', pos: new THREE.Vector3(24.7, 0, 14.2), mesh: new THREE.Group(), interacted: false, active: true },
+    { id: 'silent', role: 'silent', label: 'Silent', roomId: 'warden-approach', pos: new THREE.Vector3(20.1, 0, 15.2), mesh: new THREE.Group(), interacted: false, active: true },
+  ];
+  private readonly discoveredRooms = new Set<RoomId>(['cell-block']);
+  private readonly objectiveHints = new Set<ObjectiveHintId>(['locked-exit']);
+  private currentRoomId: RoomId = 'cell-block';
   private readonly torchLight = new THREE.SpotLight(0xf7d089, TORCH_OFF_INTENSITY, 16, Math.PI / 7, 0.55, 1.2);
   private readonly fillLight = new THREE.PointLight(0xa6d7ff, 0.75, 5.5, 2);
   private readonly doorLight = new THREE.PointLight(0xffd27a, 1.1, 5.2, 2);
@@ -190,7 +329,7 @@ class DungeonCrawlerApp {
 
   private yaw = Math.PI;
   private pitch = -0.2;
-  private message = 'Scout report: find the torch and brass key, then crack open the archive door before the kennel timer hits zero.';
+  private message = 'Scout report: the block, tunnel, barracks, kennel edge, and gate are all part of one tight prison loop. Find a weapon, secure the brass key, then crack the gate.';
   private messageTimer: number = MESSAGE_DURATION;
   private countdownRemaining: number = BALANCE.countdown.startSeconds;
   private houndReleased = false;
@@ -285,15 +424,26 @@ class DungeonCrawlerApp {
 
     const centerHint = document.createElement('div');
     centerHint.className = 'center-hint';
-    centerHint.textContent = 'Click to capture the mouse · WASD move · Mouse look · LMB attack · RMB block/parry · Space dodge · E interact · Q torch';
+    centerHint.textContent = 'Click to capture the mouse · WASD move · Mouse look · LMB attack · RMB block/parry · Space dodge · E interact · Q torch · Hold TAB minimap';
 
     const crosshair = document.createElement('div');
     crosshair.className = 'crosshair';
 
-    overlay.append(topLeft, topRight, bottomLeft, centerHint, crosshair);
+    const minimapFrame = document.createElement('div');
+    minimapFrame.className = 'minimap-frame';
+    const minimapTitle = document.createElement('div');
+    minimapTitle.className = 'minimap-title';
+    minimapTitle.textContent = 'Discovered wing map';
+    const minimapCanvas = document.createElement('canvas');
+    minimapCanvas.className = 'minimap-canvas';
+    minimapCanvas.width = 220;
+    minimapCanvas.height = 180;
+    minimapFrame.append(minimapTitle, minimapCanvas);
+
+    overlay.append(topLeft, topRight, bottomLeft, centerHint, crosshair, minimapFrame);
     this.container.appendChild(overlay);
 
-    return { hud, status, timer, message, objective, prompt, controls, crosshair };
+    return { hud, status, timer, message, objective, prompt, controls, crosshair, minimapFrame, minimapCanvas };
   }
 
   private bindEvents(): void {
@@ -325,6 +475,10 @@ class DungeonCrawlerApp {
   };
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
+    if (event.code === 'Tab') {
+      event.preventDefault();
+    }
+
     this.pressedKeys.add(event.code);
 
     if (event.code === 'KeyQ' && !event.repeat) {
@@ -340,6 +494,9 @@ class DungeonCrawlerApp {
   };
 
   private readonly onKeyUp = (event: KeyboardEvent): void => {
+    if (event.code === 'Tab') {
+      event.preventDefault();
+    }
     this.pressedKeys.delete(event.code);
   };
 
@@ -573,6 +730,63 @@ class DungeonCrawlerApp {
     this.door.mesh.add(doorPanel);
     this.door.mesh.position.copy(this.door.pos);
     this.scene.add(this.door.mesh);
+
+    const weaponHandle = new THREE.Mesh(
+      new THREE.BoxGeometry(0.14, 0.12, 0.72),
+      new THREE.MeshStandardMaterial({ color: 0x7c5436, roughness: 0.88, metalness: 0.05 }),
+    );
+    const weaponBlade = new THREE.Mesh(
+      new THREE.BoxGeometry(0.06, 0.03, 0.72),
+      new THREE.MeshStandardMaterial({ color: 0xc7d2da, roughness: 0.4, metalness: 0.72 }),
+    );
+    weaponBlade.position.set(0.05, 0.08, 0);
+    this.weapon.mesh = new THREE.Group();
+    this.weapon.mesh.add(weaponHandle, weaponBlade);
+    this.weapon.mesh.position.copy(this.weapon.pos);
+    this.weapon.mesh.rotation.x = 0.45;
+    this.weapon.mesh.rotation.z = 0.22;
+    this.scene.add(this.weapon.mesh);
+
+    for (const note of this.notePickups) {
+      note.mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(0.36, 0.02, 0.26),
+        new THREE.MeshStandardMaterial({ color: 0xe6ddba, emissive: 0x66552a, emissiveIntensity: 0.2, roughness: 0.95, metalness: 0.02 }),
+      );
+      note.mesh.castShadow = true;
+      note.mesh.position.copy(note.pos);
+      this.scene.add(note.mesh);
+    }
+
+    for (const prisoner of this.prisoners) {
+      const palette: Record<PrisonerRole, number> = {
+        helper: 0x8fd1a3,
+        coward: 0xc4c77f,
+        informant: 0x9db5ff,
+        hostile: 0xd16767,
+        silent: 0x9d8fbc,
+      };
+      prisoner.mesh = this.createPrisonerMesh(palette[prisoner.role]);
+      prisoner.mesh.position.set(prisoner.pos.x, 0, prisoner.pos.z);
+      this.scene.add(prisoner.mesh);
+    }
+  }
+
+  private createPrisonerMesh(color: number): THREE.Group {
+    const prisoner = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.28, 0.72, 4, 8),
+      new THREE.MeshStandardMaterial({ color, emissive: 0x1a1a1a, emissiveIntensity: 0.12 }),
+    );
+    body.castShadow = true;
+    body.position.y = 0.72;
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.2, 14, 14),
+      new THREE.MeshStandardMaterial({ color: 0xf2dbc1, roughness: 0.9, metalness: 0.02 }),
+    );
+    head.position.y = 1.38;
+    head.castShadow = true;
+    prisoner.add(body, head);
+    return prisoner;
   }
 
   private render = (): void => {
@@ -589,6 +803,7 @@ class DungeonCrawlerApp {
     this.updateGuard(delta);
     this.updateHound(delta);
     this.updateWorldActors(delta);
+    this.updateRoomDiscovery();
     this.updateCamera();
     this.updateUi();
     this.previousButtons.left = this.pointerButtons.left;
@@ -847,6 +1062,23 @@ class DungeonCrawlerApp {
   }
 
   private updateWorldActors(delta: number): void {
+    if (this.weapon.active) {
+      this.weapon.mesh.rotation.y += delta * 1.4;
+      this.weapon.mesh.position.y = this.weapon.pos.y + Math.sin(performance.now() * 0.0032) * 0.05;
+    }
+
+    for (const note of this.notePickups) {
+      if (!note.active) continue;
+      note.mesh.rotation.y += delta * 0.8;
+      note.mesh.position.y = note.pos.y + Math.sin(performance.now() * 0.0025 + note.pos.x) * 0.03;
+    }
+
+    for (const prisoner of this.prisoners) {
+      prisoner.mesh.visible = prisoner.active;
+      if (!prisoner.active) continue;
+      prisoner.mesh.rotation.y = Math.sin(performance.now() * 0.0012 + prisoner.pos.x) * 0.12;
+    }
+
     if (this.key.active) {
       this.key.mesh.rotation.y += delta * 1.7;
       this.key.mesh.position.y = this.key.pos.y + Math.sin(performance.now() * 0.003) * 0.04;
@@ -859,7 +1091,7 @@ class DungeonCrawlerApp {
 
     if (!this.player.missionComplete && !this.door.locked && this.isInsideRect(this.player.pos.x, this.player.pos.z, this.exitZone)) {
       this.player.missionComplete = true;
-      this.setMessage('Wing breached. Shoulder-slice objective complete.');
+      this.setMessage('Exit gate breached. Prison slice clear.');
     }
   }
 
@@ -897,6 +1129,33 @@ class DungeonCrawlerApp {
   }
 
   private handleInteraction(): void {
+    if (this.weapon.active && this.player.pos.distanceTo(this.weapon.pos) <= 1.45) {
+      this.weapon.active = false;
+      this.weapon.mesh.visible = false;
+      this.player.hasWeapon = true;
+      this.objectiveHints.add('weapon');
+      this.sound.play('keyPickup');
+      this.setMessage('Confiscated shiv recovered. Bare-handed flailing upgrades into real combat.');
+      return;
+    }
+
+    for (const note of this.notePickups) {
+      if (note.active && this.player.pos.distanceTo(note.pos) <= 1.35) {
+        note.active = false;
+        note.mesh.visible = false;
+        this.objectiveHints.add('frame');
+        this.setMessage(`${note.title}: ${note.text}`);
+        return;
+      }
+    }
+
+    for (const prisoner of this.prisoners) {
+      if (prisoner.active && this.player.pos.distanceTo(prisoner.pos) <= 1.7) {
+        this.handlePrisonerInteraction(prisoner);
+        return;
+      }
+    }
+
     if (this.torchPickup.active && this.player.pos.distanceTo(this.torchPickup.pos) <= BALANCE.torch.interactDistance) {
       this.torchPickup.active = false;
       this.player.hasTorch = true;
@@ -911,6 +1170,7 @@ class DungeonCrawlerApp {
       this.key.active = false;
       this.player.hasKey = true;
       this.key.mesh.visible = false;
+      this.objectiveHints.add('key');
       this.sound.play('keyPickup');
       this.setMessage('Key secured. Tiny chaos, maximum usefulness.');
       return;
@@ -919,23 +1179,84 @@ class DungeonCrawlerApp {
     const doorDistance = this.player.pos.distanceTo(this.door.pos);
     if (this.door.locked && this.player.hasKey && doorDistance <= 1.75) {
       this.unlockDoor();
-      this.setMessage('Door unlocked. The archive loop is open.');
+      this.setMessage('Gate unlocked. The exit chamber is finally open.');
       return;
     }
 
     if (this.door.locked && doorDistance <= 1.75) {
-      this.setMessage('Locked. The key is somewhere past the guard.');
+      this.setMessage('Locked. The key is somewhere past the barracks and kennel edge.');
     }
   }
 
   private unlockDoor(): void {
     this.door.locked = false;
     this.door.mesh.visible = false;
+    this.objectiveHints.add('locked-exit');
     this.sound.play('doorUnlock');
+  }
+
+  private handlePrisonerInteraction(prisoner: PrisonerState): void {
+    prisoner.interacted = true;
+
+    switch (prisoner.role) {
+      case 'helper':
+        this.player.health = Math.min(PLAYER_MAX_HEALTH, this.player.health + 1);
+        this.objectiveHints.add('weapon');
+        this.objectiveHints.add('key');
+        this.setMessage('Helper: "Barracks stash holds a shiv. Brass key sits by the kennel rail. Also? You were framed."');
+        break;
+      case 'coward':
+        this.objectiveHints.add('kennel');
+        this.guard.lastSeen.copy(prisoner.pos);
+        this.guard.state = 'suspicious';
+        this.guard.stateTimer = BALANCE.guard.suspiciousDurationSeconds;
+        this.sound.play('alertTrigger');
+        this.setMessage('Coward panics and rats on your position. Guard attention just shifted toward the tunnel.');
+        break;
+      case 'informant':
+        this.objectiveHints.add('key');
+        this.objectiveHints.add('locked-exit');
+        this.objectiveHints.add('frame');
+        this.setMessage('Informant: "Warden forged the seal after intake. Get the key, open the gate, find the magistrate ledger."');
+        break;
+      case 'hostile':
+        if (!this.player.hasWeapon) {
+          this.player.health = Math.max(0, this.player.health - 1);
+          this.guard.lastSeen.copy(prisoner.pos);
+          this.guard.state = 'suspicious';
+          this.guard.stateTimer = BALANCE.guard.suspiciousDurationSeconds;
+          this.sound.play('alertTrigger');
+          this.setMessage('Hostile prisoner slams you into the wall. Bring a weapon next time.');
+        } else {
+          prisoner.active = false;
+          prisoner.mesh.visible = false;
+          this.objectiveHints.add('key');
+          this.setMessage('A flash of steel ends the argument. The hostile points toward the brass key before backing off.');
+        }
+        break;
+      case 'silent':
+        this.objectiveHints.add('frame');
+        this.objectiveHints.add('locked-exit');
+        this.setMessage('The silent prisoner presses a broken court seal into your hand. Same crest. Wrong wax. You were set up.');
+        break;
+    }
   }
 
   private resolveAttack(): void {
     if (this.tryHitHound()) {
+      return;
+    }
+
+    if (!this.player.hasWeapon) {
+      const toGuardBare = this.guard.pos.clone().sub(this.player.pos);
+      if (toGuardBare.length() <= BALANCE.player.attackReach) {
+        this.guard.state = this.guard.state === 'chase' ? 'chase' : 'suspicious';
+        this.guard.stateTimer = Math.max(this.guard.stateTimer, BALANCE.guard.suspiciousDurationSeconds);
+        this.guard.lastSeen.copy(this.player.pos);
+        this.setMessage('Bare hands only annoy the guard. Find something sharper in the barracks.');
+      } else {
+        this.setMessage('A nervous swing. You need reach and steel.');
+      }
       return;
     }
 
@@ -964,6 +1285,11 @@ class DungeonCrawlerApp {
   private tryHitHound(): boolean {
     if (!this.houndReleased || this.hound.state === 'down' || this.hound.state === 'idle') {
       return false;
+    }
+
+    if (!this.player.hasWeapon) {
+      this.setMessage('Punching the hound is a bold little disaster. Bring the shiv.');
+      return true;
     }
 
     const toHound = this.hound.pos.clone().sub(this.player.pos);
@@ -1224,12 +1550,27 @@ class DungeonCrawlerApp {
     this.player.state = 'idle';
     this.player.hasKey = false;
     this.player.hasTorch = false;
+    this.player.hasWeapon = false;
     this.player.torchOn = false;
     this.countdownRemaining = BALANCE.countdown.startSeconds;
+    this.weapon.active = true;
+    this.weapon.mesh.visible = true;
+    this.weapon.mesh.position.copy(this.weapon.pos);
     this.key.active = true;
     this.key.mesh.visible = true;
     this.torchPickup.active = true;
     this.torchPickup.mesh.visible = true;
+    for (const note of this.notePickups) {
+      note.active = true;
+      note.mesh.visible = true;
+      note.mesh.position.copy(note.pos);
+    }
+    for (const prisoner of this.prisoners) {
+      prisoner.active = true;
+      prisoner.interacted = false;
+      prisoner.mesh.visible = true;
+      prisoner.mesh.position.set(prisoner.pos.x, 0, prisoner.pos.z);
+    }
     this.door.locked = true;
     this.door.mesh.visible = true;
     this.guard.pos.copy(this.guardSpawn);
@@ -1247,6 +1588,11 @@ class DungeonCrawlerApp {
     this.hound.mesh.visible = false;
     this.houndReleased = false;
     this.warningLight.intensity = 0;
+    this.discoveredRooms.clear();
+    this.discoveredRooms.add('cell-block');
+    this.objectiveHints.clear();
+    this.objectiveHints.add('locked-exit');
+    this.currentRoomId = 'cell-block';
     this.setMessage('Dragged back to the wing entrance. Try a sneakier route.');
   }
 
@@ -1447,6 +1793,99 @@ class DungeonCrawlerApp {
     return x >= rect.minX && x <= rect.maxX && z >= rect.minZ && z <= rect.maxZ;
   }
 
+  private updateRoomDiscovery(): void {
+    const room = this.rooms.find((candidate) => this.isInsideRect(this.player.pos.x, this.player.pos.z, candidate.rect));
+    if (!room) {
+      return;
+    }
+
+    this.currentRoomId = room.id;
+    if (!this.discoveredRooms.has(room.id)) {
+      this.discoveredRooms.add(room.id);
+      this.setMessage(room.discoverMessage);
+    }
+  }
+
+  private drawMinimap(): void {
+    const canvas = this.ui.minimapCanvas;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return;
+    }
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = 'rgba(5, 8, 14, 0.94)';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    const pad = 18;
+    const scaleX = (canvas.width - pad * 2) / WORLD_WIDTH;
+    const scaleY = (canvas.height - pad * 2) / WORLD_DEPTH;
+    const mapX = (x: number) => pad + x * scaleX;
+    const mapY = (z: number) => pad + z * scaleY;
+
+    for (const room of this.rooms) {
+      if (!this.discoveredRooms.has(room.id)) {
+        continue;
+      }
+
+      const width = (room.rect.maxX - room.rect.minX) * scaleX;
+      const height = (room.rect.maxZ - room.rect.minZ) * scaleY;
+      context.fillStyle = `#${room.color.toString(16).padStart(6, '0')}`;
+      context.globalAlpha = 0.28;
+      context.fillRect(mapX(room.rect.minX), mapY(room.rect.minZ), width, height);
+      context.globalAlpha = 1;
+      context.strokeStyle = 'rgba(230, 236, 247, 0.55)';
+      context.lineWidth = 1.2;
+      context.strokeRect(mapX(room.rect.minX), mapY(room.rect.minZ), width, height);
+      context.fillStyle = 'rgba(241, 245, 255, 0.86)';
+      context.font = '10px IBM Plex Mono, monospace';
+      context.fillText(room.minimapLabel, mapX(room.rect.minX) + 4, mapY(room.rect.minZ) + 12);
+    }
+
+    for (const door of this.minimapDoors) {
+      if (!door.rooms.some((roomId) => this.discoveredRooms.has(roomId))) {
+        continue;
+      }
+
+      context.strokeStyle = this.door.locked && door.rooms.includes('exit-gate') ? '#ffb870' : 'rgba(133, 226, 180, 0.95)';
+      context.lineWidth = 2;
+      context.beginPath();
+      if (door.axis === 'vertical') {
+        context.moveTo(mapX(door.x), mapY(door.z - 0.9));
+        context.lineTo(mapX(door.x), mapY(door.z + 0.9));
+      } else {
+        context.moveTo(mapX(door.x - 0.9), mapY(door.z));
+        context.lineTo(mapX(door.x + 0.9), mapY(door.z));
+      }
+      context.stroke();
+    }
+
+    const drawMarker = (x: number, z: number, color: string, label: string): void => {
+      context.fillStyle = color;
+      context.beginPath();
+      context.arc(mapX(x), mapY(z), 4.5, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      context.font = '9px IBM Plex Mono, monospace';
+      context.fillText(label, mapX(x) + 6, mapY(z) - 6);
+    };
+
+    if (this.objectiveHints.has('weapon') || this.discoveredRooms.has('barracks-key-room')) {
+      drawMarker(this.weapon.pos.x, this.weapon.pos.z, '#7de7ff', this.weapon.active ? 'shiv' : 'armed');
+    }
+    if (this.objectiveHints.has('key') || this.discoveredRooms.has('barracks-key-room') || this.discoveredRooms.has('kennel-edge')) {
+      drawMarker(this.key.pos.x, this.key.pos.z, '#ffd65c', this.key.active ? 'key' : 'key ✓');
+    }
+    if (this.objectiveHints.has('frame')) {
+      drawMarker(13.4, 8.4, '#c8a8ff', 'proof');
+    }
+    if (this.objectiveHints.has('kennel')) {
+      drawMarker(24.8, 14.2, '#ff8c78', 'kennel');
+    }
+
+    drawMarker(this.player.pos.x, this.player.pos.z, '#82ffa7', 'you');
+  }
+
   private updateUi(): void {
     const guardLabel: Record<GuardState, string> = {
       patrol: 'patrolling',
@@ -1470,17 +1909,38 @@ class DungeonCrawlerApp {
       .padStart(2, '0');
     const seconds = (remainingSeconds % 60).toString().padStart(2, '0');
 
-    this.ui.hud.textContent = `HP ${'♥'.repeat(Math.max(this.player.health, 0))}${'·'.repeat(Math.max(0, PLAYER_MAX_HEALTH - this.player.health))}  •  Key ${this.player.hasKey ? 'yes' : 'no'}  •  Torch ${this.player.hasTorch ? (this.player.torchOn ? 'lit' : 'carried') : 'missing'}  •  Dodge ${this.player.dodgeCooldown > 0 ? this.player.dodgeCooldown.toFixed(1) : 'ready'}`;
+    this.drawMinimap();
+    this.ui.minimapFrame.classList.toggle('visible', this.pressedKeys.has('Tab') || this.player.missionComplete);
+
+    this.ui.hud.textContent = `HP ${'♥'.repeat(Math.max(this.player.health, 0))}${'·'.repeat(Math.max(0, PLAYER_MAX_HEALTH - this.player.health))}  •  Weapon ${this.player.hasWeapon ? 'shiv' : 'bare'}  •  Key ${this.player.hasKey ? 'yes' : 'no'}  •  Torch ${this.player.hasTorch ? (this.player.torchOn ? 'lit' : 'carried') : 'missing'}  •  Dodge ${this.player.dodgeCooldown > 0 ? this.player.dodgeCooldown.toFixed(1) : 'ready'}`;
     this.ui.status.textContent = `Guard ${guardLabel[this.guard.state]}  •  Hound ${houndLabel[this.hound.state]}  •  Player ${this.player.state}`;
     this.ui.timer.textContent = `KENNEL TIMER ${minutes}:${seconds}${this.player.hasTorch && this.player.torchOn ? '  •  drain x1.65' : ''}`;
     this.ui.timer.className = `timer${remainingSeconds <= BALANCE.countdown.criticalWarningSeconds ? ' critical' : remainingSeconds <= BALANCE.countdown.lowWarningSeconds ? ' warning' : ''}`;
     this.ui.message.textContent = this.messageTimer > 0 ? this.message : '';
-    this.ui.objective.textContent = this.player.missionComplete ? 'Archive breached — shoulder slice clear.' : 'Objective: torch → key → door → archive';
+    this.ui.objective.textContent = this.player.missionComplete
+      ? 'Exit gate breached — compact prison slice clear.'
+      : `Room: ${this.rooms.find((room) => room.id === this.currentRoomId)?.name ?? 'Unknown'}  •  Objective: torch → shiv → key → locked gate`;
     this.ui.prompt.textContent = this.getPromptText();
-    this.ui.controls.textContent = 'Torch widens your view but worsens stealth and drains the kennel timer faster. The guard still plays the main stealth/combat loop; the hound punishes running out the clock.';
+    this.ui.controls.textContent = 'Hold TAB for the discovered-room minimap. Torch widens your view but worsens stealth and drains the kennel timer faster. Prisoners now give authored consequences instead of random filler.';
   }
 
   private getPromptText(): string {
+    if (this.weapon.active && this.player.pos.distanceTo(this.weapon.pos) <= 1.45) {
+      return 'Press E or F to recover the confiscated shiv.';
+    }
+
+    for (const note of this.notePickups) {
+      if (note.active && this.player.pos.distanceTo(note.pos) <= 1.35) {
+        return `Press E or F to read ${note.title}.`;
+      }
+    }
+
+    for (const prisoner of this.prisoners) {
+      if (prisoner.active && this.player.pos.distanceTo(prisoner.pos) <= 1.7) {
+        return `Press E or F to deal with the ${prisoner.label.toLowerCase()} prisoner.`;
+      }
+    }
+
     if (this.torchPickup.active && this.player.pos.distanceTo(this.torchPickup.pos) <= BALANCE.torch.interactDistance) {
       return 'Press E or F to recover the torch.';
     }
@@ -1492,20 +1952,24 @@ class DungeonCrawlerApp {
     const doorDistance = this.player.pos.distanceTo(this.door.pos);
     if (doorDistance <= 1.75) {
       if (this.door.locked && this.player.hasKey) {
-        return 'Press E or F to unlock the archive door.';
+        return 'Press E or F to unlock the exit gate.';
       }
       if (this.door.locked) {
-        return 'Locked door. The key is somewhere past the guard.';
+        return 'Locked gate. The key is somewhere past the barracks and kennel edge.';
       }
-      return 'Archive door is open. Slip inside.';
+      return 'Exit gate is open. Slip through.';
     }
 
     if (!this.player.hasTorch) {
-      return 'No torch. Stay cool and search the side halls.';
+      return 'No torch. Start in the cell block and sweep the side halls.';
+    }
+
+    if (!this.player.hasWeapon) {
+      return 'Torch found. Good. Now raid the barracks for something sharper than your fists.';
     }
 
     if (!this.player.hasKey) {
-      return 'Torch found. Now get the brass key before the timer runs out.';
+      return 'Shiv found. Now get the brass key before the kennel timer runs out.';
     }
 
     return this.houndReleased ? 'The hound is loose. Break line of sight or finish the run.' : '';
