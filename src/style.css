@@ -201,6 +201,110 @@ canvas {
   background: rgba(6, 8, 14, 0.96);
 }
 
+.screen-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgba(4, 6, 11, 0.66);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 140ms ease;
+  pointer-events: none;
+}
+
+.screen-overlay.visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.screen-card {
+  width: min(34rem, calc(100vw - 2.5rem));
+  display: grid;
+  gap: 0.9rem;
+  padding: 1.25rem;
+  border-radius: 1rem;
+  background: linear-gradient(180deg, rgba(14, 18, 28, 0.98), rgba(8, 10, 16, 0.95));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+}
+
+.screen-eyebrow {
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', ui-monospace, monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8fe3ff;
+}
+
+.screen-title {
+  font-size: clamp(1.8rem, 5vw, 2.7rem);
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+.screen-body {
+  white-space: pre-line;
+  line-height: 1.5;
+  color: #d8dfeb;
+}
+
+.screen-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.screen-button,
+.binding-button {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f7f5e8;
+  border-radius: 0.85rem;
+  padding: 0.7rem 1rem;
+  font: inherit;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.screen-button:hover,
+.binding-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(143, 227, 255, 0.5);
+  background: rgba(143, 227, 255, 0.12);
+}
+
+.binding-grid {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.binding-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.binding-label {
+  color: #d8dfeb;
+}
+
+.binding-button {
+  min-width: 7rem;
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', ui-monospace, monospace;
+}
+
+.binding-button.listening {
+  border-color: rgba(255, 212, 121, 0.72);
+  background: rgba(255, 212, 121, 0.12);
+  color: #ffd479;
+}
+
 @media (max-width: 720px) {
   #app {
     width: 100vw;
