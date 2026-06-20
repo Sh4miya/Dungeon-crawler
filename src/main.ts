@@ -8,9 +8,11 @@ import { SoundCueManager } from './soundCueManager';
 type PlayerState = 'idle' | 'attack' | 'block' | 'dodge';
 type GuardState = 'patrol' | 'suspicious' | 'chase' | 'return' | 'stunned';
 type HoundState = 'idle' | 'released' | 'search' | 'chase' | 'attack' | 'reset' | 'down';
+type GamePhase = 'title' | 'playing' | 'death' | 'victory';
 type RoomId = 'cell-block' | 'maintenance-tunnel' | 'informant-nook' | 'warden-approach' | 'barracks-key-room' | 'kennel-edge' | 'exit-gate';
 type PrisonerRole = 'helper' | 'coward' | 'informant' | 'hostile' | 'silent';
 type ObjectiveHintId = 'locked-exit' | 'weapon' | 'key' | 'frame' | 'kennel';
+type BindingAction = 'moveUp' | 'moveDown' | 'moveLeft' | 'moveRight' | 'interact' | 'torch' | 'dodge' | 'minimap';
 
 type RoomDefinition = {
   id: RoomId;
@@ -67,8 +69,20 @@ type UiRefs = {
   prompt: HTMLDivElement;
   controls: HTMLDivElement;
   crosshair: HTMLDivElement;
+  centerHint: HTMLDivElement;
   minimapFrame: HTMLDivElement;
   minimapCanvas: HTMLCanvasElement;
+  screen: HTMLDivElement;
+  screenEyebrow: HTMLDivElement;
+  screenTitle: HTMLHeadingElement;
+  screenBody: HTMLParagraphElement;
+  screenButtons: HTMLDivElement;
+  startButton: HTMLButtonElement;
+  controlsButton: HTMLButtonElement;
+  backButton: HTMLButtonElement;
+  restartButton: HTMLButtonElement;
+  titleButton: HTMLButtonElement;
+  controlsPanel: HTMLDivElement;
 };
 
 const WORLD_WIDTH = BALANCE.world.width;
@@ -326,6 +340,37 @@ class DungeonCrawlerApp {
 
   private guardPath: Array<{ x: number; z: number }> = [];
   private guardRepathTimer = 0;
+  private readonly bindingLabels: Record<BindingAction, string> = {
+    moveUp: 'Move forward',
+    moveDown: 'Move backward',
+    moveLeft: 'Strafe left',
+    moveRight: 'Strafe right',
+    interact: 'Interact',
+    torch: 'Toggle torch',
+    dodge: 'Dodge',
+    minimap: 'Hold minimap',
+  };
+  private readonly bindings: Record<BindingAction, string> = {
+    moveUp: 'KeyW',
+    moveDown: 'KeyS',
+    moveLeft: 'KeyA',
+    moveRight: 'KeyD',
+    interact: 'KeyE',
+    torch: 'KeyQ',
+    dodge: 'Space',
+    minimap: 'Tab',
+  };
+  private readonly bindingButtons = {} as Record<BindingAction, HTMLButtonElement>;
+  private phase: GamePhase = 'title';
+  private showingControls = false;
+  private controlsReturnPhase: GamePhase = 'title';
+  private pendingRebind: BindingAction | null = null;
+  private readonly wardenEncounter = {
+    active: false,
+    cleared: false,
+    lightsOutTimer: 0,
+    torchJamTimer: 0,
+  };
 
   private yaw = Math.PI;
   private pitch = -0.2;
@@ -337,6 +382,7 @@ class DungeonCrawlerApp {
   constructor(container: HTMLElement) {
     this.container = container;
     this.ui = this.createUi();
+    this.syncBindingButtons();
     this.setupRenderer();
     this.setupScene();
     this.createLevel();
@@ -424,7 +470,6 @@ class DungeonCrawlerApp {
 
     const centerHint = document.createElement('div');
     centerHint.className = 'center-hint';
-    centerHint.textContent = 'Click to capture the mouse · WASD move · Mouse look · LMB attack · RMB block/parry · Space dodge · E interact · Q torch · Hold TAB minimap';
 
     const crosshair = document.createElement('div');
     crosshair.className = 'crosshair';
@@ -440,10 +485,270 @@ class DungeonCrawlerApp {
     minimapCanvas.height = 180;
     minimapFrame.append(minimapTitle, minimapCanvas);
 
-    overlay.append(topLeft, topRight, bottomLeft, centerHint, crosshair, minimapFrame);
+    const screen = document.createElement('div');
+    screen.className = 'screen-overlay';
+    const screenCard = document.createElement('div');
+    screenCard.className = 'screen-card';
+    const screenEyebrow = document.createElement('div');
+    screenEyebrow.className = 'screen-eyebrow';
+    const screenTitle = document.createElement('h1');
+    screenTitle.className = 'screen-title';
+    const screenBody = document.createElement('p');
+    screenBody.className = 'screen-body';
+    const screenButtons = document.createElement('div');
+    screenButtons.className = 'screen-buttons';
+    const startButton = document.createElement('button');
+    startButton.className = 'screen-button';
+    startButton.type = 'button';
+    startButton.textContent = 'Start slice';
+    startButton.addEventListener('click', () => this.startRun());
+    const controlsButton = document.createElement('button');
+    controlsButton.className = 'screen-button secondary';
+    controlsButton.type = 'button';
+    controlsButton.textContent = 'Controls & remap';
+    controlsButton.addEventListener('click', () => this.openControls());
+    const backButton = document.createElement('button');
+    backButton.className = 'screen-button secondary';
+    backButton.type = 'button';
+    backButton.textContent = 'Back';
+    backButton.addEventListener('click', () => this.closeControls());
+    const restartButton = document.createElement('button');
+    restartButton.className = 'screen-button';
+    restartButton.type = 'button';
+    restartButton.textContent = 'Restart run';
+    restartButton.addEventListener('click', () => this.restartRun());
+    const titleButton = document.createElement('button');
+    titleButton.className = 'screen-button secondary';
+    titleButton.type = 'button';
+    titleButton.textContent = 'Return to title';
+    titleButton.addEventListener('click', () => this.returnToTitle());
+    const controlsPanel = document.createElement('div');
+    controlsPanel.className = 'binding-grid';
+
+    const bindingOrder: BindingAction[] = ['moveUp', 'moveDown', 'moveLeft', 'moveRight', 'interact', 'torch', 'dodge', 'minimap'];
+    for (const action of bindingOrder) {
+      const row = document.createElement('div');
+      row.className = 'binding-row';
+      const label = document.createElement('span');
+      label.className = 'binding-label';
+      label.textContent = this.bindingLabels[action];
+      const button = document.createElement('button');
+      button.className = 'binding-button';
+      button.type = 'button';
+      button.addEventListener('click', () => this.beginRebind(action));
+      row.append(label, button);
+      controlsPanel.append(row);
+      this.bindingButtons[action] = button;
+    }
+
+    screenButtons.append(startButton, controlsButton, backButton, restartButton, titleButton);
+    screenCard.append(screenEyebrow, screenTitle, screenBody, screenButtons, controlsPanel);
+    screen.append(screenCard);
+
+    overlay.append(topLeft, topRight, bottomLeft, centerHint, crosshair, minimapFrame, screen);
     this.container.appendChild(overlay);
 
-    return { hud, status, timer, message, objective, prompt, controls, crosshair, minimapFrame, minimapCanvas };
+    return {
+      hud,
+      status,
+      timer,
+      message,
+      objective,
+      prompt,
+      controls,
+      crosshair,
+      centerHint,
+      minimapFrame,
+      minimapCanvas,
+      screen,
+      screenEyebrow,
+      screenTitle,
+      screenBody,
+      screenButtons,
+      startButton,
+      controlsButton,
+      backButton,
+      restartButton,
+      titleButton,
+      controlsPanel,
+    };
+  }
+
+  private startRun(resetState = true): void {
+    if (resetState) {
+      this.respawnPlayer();
+      this.setMessage('Slip the wing, arm yourself, then bait the Warden into a bad swing.');
+    }
+    this.phase = 'playing';
+    this.showingControls = false;
+    this.pendingRebind = null;
+    this.clearPressedInput();
+    this.clock.getDelta();
+  }
+
+  private restartRun(): void {
+    this.startRun(true);
+  }
+
+  private returnToTitle(): void {
+    this.respawnPlayer();
+    this.phase = 'title';
+    this.showingControls = false;
+    this.pendingRebind = null;
+    this.clearPressedInput();
+    if (document.pointerLockElement === this.renderer.domElement) {
+      document.exitPointerLock();
+    }
+    this.setMessage('Scout report: the prison slice now opens with a menu, ends with the Warden, and lets you remap the keys before diving back in.');
+  }
+
+  private openControls(): void {
+    this.controlsReturnPhase = this.phase;
+    this.showingControls = true;
+    this.pendingRebind = null;
+    this.syncBindingButtons();
+    if (document.pointerLockElement === this.renderer.domElement) {
+      document.exitPointerLock();
+    }
+  }
+
+  private closeControls(): void {
+    this.showingControls = false;
+    this.pendingRebind = null;
+    this.syncBindingButtons();
+  }
+
+  private beginRebind(action: BindingAction): void {
+    this.pendingRebind = action;
+    this.syncBindingButtons();
+  }
+
+  private syncBindingButtons(): void {
+    const actions = Object.keys(this.bindingLabels) as BindingAction[];
+    for (const action of actions) {
+      const button = this.bindingButtons[action];
+      if (!button) continue;
+      const waiting = this.pendingRebind === action;
+      button.textContent = waiting ? 'Press a key…' : this.formatBinding(this.bindings[action]);
+      button.classList.toggle('listening', waiting);
+    }
+  }
+
+  private formatBinding(code: string): string {
+    if (code === 'Space') return 'Space';
+    if (code.startsWith('Key')) return code.slice(3);
+    if (code.startsWith('Digit')) return code.slice(5);
+    return code.replace('Arrow', 'Arrow ');
+  }
+
+  private isActionPressed(action: BindingAction): boolean {
+    return this.pressedKeys.has(this.bindings[action]);
+  }
+
+  private clearPressedInput(): void {
+    this.pressedKeys.clear();
+    this.pointerButtons.left = false;
+    this.pointerButtons.right = false;
+    this.previousButtons.left = false;
+    this.previousButtons.right = false;
+  }
+
+  private getControlsSummary(): string {
+    return `${this.formatBinding(this.bindings.moveUp)}/${this.formatBinding(this.bindings.moveLeft)}/${this.formatBinding(this.bindings.moveDown)}/${this.formatBinding(this.bindings.moveRight)} move · Mouse look · LMB strike · RMB block/parry · ${this.formatBinding(this.bindings.dodge)} dodge · ${this.formatBinding(this.bindings.interact)} interact · ${this.formatBinding(this.bindings.torch)} torch · hold ${this.formatBinding(this.bindings.minimap)} map`;
+  }
+
+  private getControlsSupportText(): string {
+    return `Remap keyboard actions here. Mouse attack/block stay fixed so the Warden duel still reads cleanly.`;
+  }
+
+  private enterDeathState(reason: string): void {
+    this.phase = 'death';
+    this.showingControls = false;
+    this.pendingRebind = null;
+    this.clearPressedInput();
+    if (document.pointerLockElement === this.renderer.domElement) {
+      document.exitPointerLock();
+    }
+    this.setMessage(reason);
+  }
+
+  private enterVictoryState(reason: string): void {
+    this.phase = 'victory';
+    this.showingControls = false;
+    this.pendingRebind = null;
+    this.clearPressedInput();
+    if (document.pointerLockElement === this.renderer.domElement) {
+      document.exitPointerLock();
+    }
+    this.setMessage(reason);
+  }
+
+  private startWardenEncounter(): void {
+    if (this.wardenEncounter.active || this.wardenEncounter.cleared) {
+      return;
+    }
+
+    this.wardenEncounter.active = true;
+    this.wardenEncounter.lightsOutTimer = 5.5;
+    this.wardenEncounter.torchJamTimer = 2.8;
+    this.guard.state = 'chase';
+    this.guard.stateTimer = Math.max(this.guard.stateTimer, BALANCE.guard.chaseMemorySeconds + 1.5);
+    this.guard.lastSeen.copy(this.player.pos);
+    this.sound.play('alertTrigger');
+    this.setMessage('The Warden slams the corridor dark and charges the breach. Parry or stagger him before you bolt.');
+  }
+
+  private clearWardenEncounter(): void {
+    if (this.wardenEncounter.cleared) {
+      return;
+    }
+
+    this.wardenEncounter.active = false;
+    this.wardenEncounter.cleared = true;
+    this.wardenEncounter.lightsOutTimer = 0;
+    this.wardenEncounter.torchJamTimer = 0;
+    this.ambientLight.intensity = 0.24;
+    this.doorLight.intensity = 1.1;
+    this.warningLight.intensity = Math.max(this.warningLight.intensity, 0.4);
+    this.setMessage('The Warden stumbles. Gate lane is open — move!');
+  }
+
+  private isWardenArenaHot(): boolean {
+    return this.currentRoomId === 'warden-approach' || this.currentRoomId === 'exit-gate' || this.player.pos.distanceTo(this.door.pos) < 4.5;
+  }
+
+  private updateWardenEncounter(delta: number): void {
+    if (!this.wardenEncounter.active) {
+      this.ambientLight.intensity = this.wardenEncounter.cleared ? 0.24 : 0.24;
+      this.doorLight.intensity = this.door.locked ? 1.1 : this.wardenEncounter.cleared ? 1.25 : 1.1;
+      return;
+    }
+
+    this.wardenEncounter.lightsOutTimer = Math.max(0, this.wardenEncounter.lightsOutTimer - delta);
+    this.wardenEncounter.torchJamTimer = Math.max(0, this.wardenEncounter.torchJamTimer - delta);
+
+    if (this.wardenEncounter.lightsOutTimer > 0) {
+      this.ambientLight.intensity = 0.08;
+      this.doorLight.intensity = 0.3;
+    } else {
+      this.ambientLight.intensity = 0.18;
+      this.doorLight.intensity = 0.8;
+    }
+
+    if (this.guard.state === 'stunned' && this.isWardenArenaHot()) {
+      this.clearWardenEncounter();
+      return;
+    }
+
+    if (!this.player.hasTorch) {
+      return;
+    }
+
+    if (this.isWardenArenaHot() && this.wardenEncounter.torchJamTimer === 0 && !this.wardenEncounter.cleared) {
+      this.wardenEncounter.torchJamTimer = 3.6;
+      this.player.torchOn = false;
+      this.setMessage('The Warden batters the torchlight aside. Find your footing and answer the swing.');
+    }
   }
 
   private bindEvents(): void {
@@ -451,6 +756,9 @@ class DungeonCrawlerApp {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     this.renderer.domElement.addEventListener('click', () => {
+      if (this.phase !== 'playing' || this.showingControls) {
+        return;
+      }
       if (document.pointerLockElement !== this.renderer.domElement) {
         this.renderer.domElement.requestPointerLock();
       }
@@ -471,19 +779,58 @@ class DungeonCrawlerApp {
   };
 
   private readonly onPointerLockChange = (): void => {
-    this.ui.crosshair.classList.toggle('active', document.pointerLockElement === this.renderer.domElement);
+    this.ui.crosshair.classList.toggle('active', document.pointerLockElement === this.renderer.domElement && this.phase === 'playing' && !this.showingControls);
   };
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
-    if (event.code === 'Tab') {
+    if (event.code === this.bindings.minimap || event.code === 'Tab') {
       event.preventDefault();
+    }
+
+    if (this.pendingRebind && !event.repeat) {
+      event.preventDefault();
+      this.bindings[this.pendingRebind] = event.code;
+      this.pendingRebind = null;
+      this.syncBindingButtons();
+      return;
+    }
+
+    if (event.code === 'Escape' && this.showingControls) {
+      event.preventDefault();
+      this.closeControls();
+      return;
+    }
+
+    if (event.code === 'KeyC' && !event.repeat) {
+      event.preventDefault();
+      if (this.showingControls) {
+        this.closeControls();
+      } else {
+        this.openControls();
+      }
+      return;
+    }
+
+    if (this.phase !== 'playing') {
+      if (!event.repeat && event.code === 'Enter' && !this.showingControls && this.phase === 'title') {
+        this.startRun();
+      }
+      if (!event.repeat && event.code === 'KeyR' && !this.showingControls && (this.phase === 'death' || this.phase === 'victory')) {
+        this.restartRun();
+      }
+      return;
     }
 
     this.pressedKeys.add(event.code);
 
-    if (event.code === 'KeyQ' && !event.repeat) {
+    if (event.code === this.bindings.torch && !event.repeat) {
       if (!this.player.hasTorch) {
         this.setMessage('No torch yet. Find something to light the hall with.');
+        return;
+      }
+      if (this.wardenEncounter.torchJamTimer > 0) {
+        this.player.torchOn = false;
+        this.setMessage('The Warden snuffed the flame. You will need a moment before it relights.');
         return;
       }
 
@@ -494,14 +841,14 @@ class DungeonCrawlerApp {
   };
 
   private readonly onKeyUp = (event: KeyboardEvent): void => {
-    if (event.code === 'Tab') {
+    if (event.code === this.bindings.minimap || event.code === 'Tab') {
       event.preventDefault();
     }
     this.pressedKeys.delete(event.code);
   };
 
   private readonly onMouseMove = (event: MouseEvent): void => {
-    if (document.pointerLockElement !== this.renderer.domElement) {
+    if (this.phase !== 'playing' || this.showingControls || document.pointerLockElement !== this.renderer.domElement) {
       return;
     }
 
@@ -510,6 +857,9 @@ class DungeonCrawlerApp {
   };
 
   private readonly onMouseDown = (event: MouseEvent): void => {
+    if (this.phase !== 'playing' || this.showingControls) {
+      return;
+    }
     if (event.button === 0) {
       this.pointerButtons.left = true;
     }
@@ -798,12 +1148,22 @@ class DungeonCrawlerApp {
 
   private update(delta: number): void {
     this.messageTimer = Math.max(0, this.messageTimer - delta);
-    this.updateCountdown(delta);
-    this.updatePlayer(delta);
-    this.updateGuard(delta);
-    this.updateHound(delta);
-    this.updateWorldActors(delta);
-    this.updateRoomDiscovery();
+
+    if (this.phase === 'playing' && !this.showingControls) {
+      this.updateCountdown(delta);
+      this.updatePlayer(delta);
+      this.updateGuard(delta);
+      this.updateHound(delta);
+      this.updateWardenEncounter(delta);
+      this.updateWorldActors(delta);
+      this.updateRoomDiscovery();
+    } else {
+      this.player.velocity.set(0, 0, 0);
+      this.guard.velocity.set(0, 0, 0);
+      this.hound.velocity.set(0, 0, 0);
+      this.warningLight.intensity = 0;
+    }
+
     this.updateCamera();
     this.updateUi();
     this.previousButtons.left = this.pointerButtons.left;
@@ -856,10 +1216,10 @@ class DungeonCrawlerApp {
     const cameraRight = new THREE.Vector3().crossVectors(cameraForward, new THREE.Vector3(0, 1, 0)).normalize();
 
     const moveInput = new THREE.Vector3();
-    if (this.pressedKeys.has('KeyW') || this.pressedKeys.has('ArrowUp')) moveInput.add(cameraForward);
-    if (this.pressedKeys.has('KeyS') || this.pressedKeys.has('ArrowDown')) moveInput.sub(cameraForward);
-    if (this.pressedKeys.has('KeyD') || this.pressedKeys.has('ArrowRight')) moveInput.add(cameraRight);
-    if (this.pressedKeys.has('KeyA') || this.pressedKeys.has('ArrowLeft')) moveInput.sub(cameraRight);
+    if (this.isActionPressed('moveUp') || this.pressedKeys.has('ArrowUp')) moveInput.add(cameraForward);
+    if (this.isActionPressed('moveDown') || this.pressedKeys.has('ArrowDown')) moveInput.sub(cameraForward);
+    if (this.isActionPressed('moveRight') || this.pressedKeys.has('ArrowRight')) moveInput.add(cameraRight);
+    if (this.isActionPressed('moveLeft') || this.pressedKeys.has('ArrowLeft')) moveInput.sub(cameraRight);
     moveInput.y = 0;
     if (moveInput.lengthSq() > 0) {
       moveInput.normalize();
@@ -869,8 +1229,8 @@ class DungeonCrawlerApp {
     }
 
     const justAttack = this.pointerButtons.left && !this.previousButtons.left;
-    const justDodge = this.pressedKeys.has('Space') && this.player.dodgeCooldown === 0 && this.player.state !== 'dodge';
-    const interactPressed = this.pressedKeys.has('KeyE') || this.pressedKeys.has('KeyF');
+    const justDodge = this.isActionPressed('dodge') && this.player.dodgeCooldown === 0 && this.player.state !== 'dodge';
+    const interactPressed = this.isActionPressed('interact') || this.pressedKeys.has('KeyF');
 
     if (justAttack && this.player.attackCooldown === 0 && this.player.state !== 'dodge') {
       this.player.state = 'attack';
@@ -886,7 +1246,7 @@ class DungeonCrawlerApp {
       this.player.dodgeCooldown = PLAYER_DODGE_COOLDOWN;
       this.player.velocity.copy(dodgeDirection.normalize().multiplyScalar(PLAYER_DODGE_SPEED));
       this.setMessage('Zip! Dodge window active.');
-      this.pressedKeys.delete('Space');
+      this.pressedKeys.delete(this.bindings.dodge);
     }
 
     if (this.pointerButtons.right && this.player.state !== 'dodge') {
@@ -917,7 +1277,7 @@ class DungeonCrawlerApp {
 
     if (interactPressed) {
       this.handleInteraction();
-      this.pressedKeys.delete('KeyE');
+      this.pressedKeys.delete(this.bindings.interact);
       this.pressedKeys.delete('KeyF');
     }
 
@@ -944,7 +1304,7 @@ class DungeonCrawlerApp {
     this.torchPickup.mesh.visible = this.torchPickup.active;
 
     if (this.player.health <= 0) {
-      this.respawnPlayer();
+      this.enterDeathState('The prison swallowed the run. Regroup, remap if you need to, and try the slice again.');
     }
   }
 
@@ -1090,8 +1450,12 @@ class DungeonCrawlerApp {
     }
 
     if (!this.player.missionComplete && !this.door.locked && this.isInsideRect(this.player.pos.x, this.player.pos.z, this.exitZone)) {
-      this.player.missionComplete = true;
-      this.setMessage('Exit gate breached. Prison slice clear.');
+      if (!this.wardenEncounter.cleared) {
+        this.setMessage('The gate is open, but the Warden still owns the lane. Stagger him first.');
+      } else {
+        this.player.missionComplete = true;
+        this.enterVictoryState('Exit gate breached. Warden beaten. Prison slice clear.');
+      }
     }
   }
 
@@ -1193,6 +1557,7 @@ class DungeonCrawlerApp {
     this.door.mesh.visible = false;
     this.objectiveHints.add('locked-exit');
     this.sound.play('doorUnlock');
+    this.startWardenEncounter();
   }
 
   private handlePrisonerInteraction(prisoner: PrisonerState): void {
@@ -1588,6 +1953,12 @@ class DungeonCrawlerApp {
     this.hound.mesh.visible = false;
     this.houndReleased = false;
     this.warningLight.intensity = 0;
+    this.wardenEncounter.active = false;
+    this.wardenEncounter.cleared = false;
+    this.wardenEncounter.lightsOutTimer = 0;
+    this.wardenEncounter.torchJamTimer = 0;
+    this.ambientLight.intensity = 0.24;
+    this.doorLight.intensity = 1.1;
     this.discoveredRooms.clear();
     this.discoveredRooms.add('cell-block');
     this.objectiveHints.clear();
@@ -1888,11 +2259,11 @@ class DungeonCrawlerApp {
 
   private updateUi(): void {
     const guardLabel: Record<GuardState, string> = {
-      patrol: 'patrolling',
-      suspicious: 'suspicious',
-      chase: 'chasing',
-      return: 'resetting',
-      stunned: 'stunned',
+      patrol: this.wardenEncounter.active || this.wardenEncounter.cleared ? 'warden stalking' : 'patrolling',
+      suspicious: this.wardenEncounter.active || this.wardenEncounter.cleared ? 'warden suspicious' : 'suspicious',
+      chase: this.wardenEncounter.active || this.wardenEncounter.cleared ? 'warden charging' : 'chasing',
+      return: this.wardenEncounter.active || this.wardenEncounter.cleared ? 'warden resetting' : 'resetting',
+      stunned: this.wardenEncounter.active || this.wardenEncounter.cleared ? 'warden staggered' : 'stunned',
     };
     const houndLabel: Record<HoundState, string> = {
       idle: 'kenneled',
@@ -1908,9 +2279,11 @@ class DungeonCrawlerApp {
       .toString()
       .padStart(2, '0');
     const seconds = (remainingSeconds % 60).toString().padStart(2, '0');
+    const minimapVisible = this.isActionPressed('minimap') || this.player.missionComplete;
+    const roomName = this.rooms.find((room) => room.id === this.currentRoomId)?.name ?? 'Unknown';
 
     this.drawMinimap();
-    this.ui.minimapFrame.classList.toggle('visible', this.pressedKeys.has('Tab') || this.player.missionComplete);
+    this.ui.minimapFrame.classList.toggle('visible', minimapVisible);
 
     this.ui.hud.textContent = `HP ${'♥'.repeat(Math.max(this.player.health, 0))}${'·'.repeat(Math.max(0, PLAYER_MAX_HEALTH - this.player.health))}  •  Weapon ${this.player.hasWeapon ? 'shiv' : 'bare'}  •  Key ${this.player.hasKey ? 'yes' : 'no'}  •  Torch ${this.player.hasTorch ? (this.player.torchOn ? 'lit' : 'carried') : 'missing'}  •  Dodge ${this.player.dodgeCooldown > 0 ? this.player.dodgeCooldown.toFixed(1) : 'ready'}`;
     this.ui.status.textContent = `Guard ${guardLabel[this.guard.state]}  •  Hound ${houndLabel[this.hound.state]}  •  Player ${this.player.state}`;
@@ -1919,43 +2292,110 @@ class DungeonCrawlerApp {
     this.ui.message.textContent = this.messageTimer > 0 ? this.message : '';
     this.ui.objective.textContent = this.player.missionComplete
       ? 'Exit gate breached — compact prison slice clear.'
-      : `Room: ${this.rooms.find((room) => room.id === this.currentRoomId)?.name ?? 'Unknown'}  •  Objective: torch → shiv → key → locked gate`;
+      : this.wardenEncounter.active
+        ? 'Finale: survive the blackout, bait the Warden into a bad swing, then take the gate.'
+        : this.wardenEncounter.cleared
+          ? 'Warden staggered — sprint through the open gate.'
+          : `Room: ${roomName}  •  Objective: torch → shiv → key → unlock gate → beat the Warden`;
     this.ui.prompt.textContent = this.getPromptText();
-    this.ui.controls.textContent = 'Hold TAB for the discovered-room minimap. Torch widens your view but worsens stealth and drains the kennel timer faster. Prisoners now give authored consequences instead of random filler.';
+    this.ui.controls.textContent = `${this.getControlsSummary()}  •  ${this.getControlsSupportText()}  •  Press C any time for the remap screen.`;
+    this.ui.centerHint.textContent = this.phase === 'playing'
+      ? this.showingControls
+        ? 'Controls open — choose a binding, then press a key.'
+        : this.wardenEncounter.active
+          ? 'Warden finale live — parry or stagger him, then run the gate.'
+          : 'Click to lock pointer. C opens controls. Mouse attack/block stay fixed.'
+      : 'Press Enter or click Start slice.';
+
+    const screenActive = this.phase !== 'playing' || this.showingControls;
+    this.ui.screen.classList.toggle('visible', screenActive);
+
+    if (this.showingControls) {
+      this.ui.screenEyebrow.textContent = 'Controls';
+      this.ui.screenTitle.textContent = 'Remap the keyboard';
+      this.ui.screenBody.textContent = `${this.getControlsSummary()}\n\n${this.getControlsSupportText()}`;
+      this.ui.controlsPanel.hidden = false;
+      this.ui.startButton.hidden = true;
+      this.ui.controlsButton.hidden = true;
+      this.ui.backButton.hidden = false;
+      this.ui.restartButton.hidden = true;
+      this.ui.titleButton.hidden = this.controlsReturnPhase === 'title';
+      return;
+    }
+
+    this.ui.controlsPanel.hidden = true;
+    this.ui.backButton.hidden = true;
+
+    if (this.phase === 'title') {
+      this.ui.screenEyebrow.textContent = 'Vertical slice';
+      this.ui.screenTitle.textContent = 'Dungeon Crawler';
+      this.ui.screenBody.textContent = 'Break out of the prison wing, scavenge a torch, grab a shiv, steal the brass key, and survive the Warden at the gate.';
+      this.ui.startButton.hidden = false;
+      this.ui.controlsButton.hidden = false;
+      this.ui.restartButton.hidden = true;
+      this.ui.titleButton.hidden = true;
+      return;
+    }
+
+    if (this.phase === 'death') {
+      this.ui.screenEyebrow.textContent = 'Death';
+      this.ui.screenTitle.textContent = 'Run collapsed';
+      this.ui.screenBody.textContent = 'The prison won that exchange. Restart the slice, or hop back to the title screen and retune your keys.';
+      this.ui.startButton.hidden = true;
+      this.ui.controlsButton.hidden = false;
+      this.ui.restartButton.hidden = false;
+      this.ui.titleButton.hidden = false;
+      return;
+    }
+
+    if (this.phase === 'victory') {
+      this.ui.screenEyebrow.textContent = 'Victory';
+      this.ui.screenTitle.textContent = 'Gate breached';
+      this.ui.screenBody.textContent = 'You slipped the wing, broke the finale, and cleared the prison slice.';
+      this.ui.startButton.hidden = true;
+      this.ui.controlsButton.hidden = false;
+      this.ui.restartButton.hidden = false;
+      this.ui.titleButton.hidden = false;
+      return;
+    }
   }
 
   private getPromptText(): string {
+    const interactLabel = `${this.formatBinding(this.bindings.interact)} or F`;
     if (this.weapon.active && this.player.pos.distanceTo(this.weapon.pos) <= 1.45) {
-      return 'Press E or F to recover the confiscated shiv.';
+      return `Press ${interactLabel} to recover the confiscated shiv.`;
     }
 
     for (const note of this.notePickups) {
       if (note.active && this.player.pos.distanceTo(note.pos) <= 1.35) {
-        return `Press E or F to read ${note.title}.`;
+        return `Press ${interactLabel} to read ${note.title}.`;
       }
     }
 
     for (const prisoner of this.prisoners) {
       if (prisoner.active && this.player.pos.distanceTo(prisoner.pos) <= 1.7) {
-        return `Press E or F to deal with the ${prisoner.label.toLowerCase()} prisoner.`;
+        return `Press ${interactLabel} to deal with the ${prisoner.label.toLowerCase()} prisoner.`;
       }
     }
 
     if (this.torchPickup.active && this.player.pos.distanceTo(this.torchPickup.pos) <= BALANCE.torch.interactDistance) {
-      return 'Press E or F to recover the torch.';
+      return `Press ${interactLabel} to recover the torch.`;
     }
 
     if (this.key.active && this.player.pos.distanceTo(this.key.pos) <= 1.5) {
-      return 'Press E or F to grab the brass key.';
+      return `Press ${interactLabel} to grab the brass key.`;
     }
 
     const doorDistance = this.player.pos.distanceTo(this.door.pos);
     if (doorDistance <= 1.75) {
       if (this.door.locked && this.player.hasKey) {
-        return 'Press E or F to unlock the exit gate.';
+        return `Press ${interactLabel} to unlock the exit gate.`;
       }
       if (this.door.locked) {
         return 'Locked gate. The key is somewhere past the barracks and kennel edge.';
+      }
+      if (!this.wardenEncounter.cleared) {
+        return 'Open gate, bad timing. Beat the Warden before you commit to the lane.';
       }
       return 'Exit gate is open. Slip through.';
     }
@@ -1970,6 +2410,10 @@ class DungeonCrawlerApp {
 
     if (!this.player.hasKey) {
       return 'Shiv found. Now get the brass key before the kennel timer runs out.';
+    }
+
+    if (this.wardenEncounter.active) {
+      return 'The Warden is active. Parry or shiv him into a stagger, then run.';
     }
 
     return this.houndReleased ? 'The hound is loose. Break line of sight or finish the run.' : '';
