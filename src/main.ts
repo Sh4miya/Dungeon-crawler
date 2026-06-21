@@ -61,6 +61,7 @@ type WallRect = {
 };
 
 type UiRefs = {
+  overlay: HTMLDivElement;
   hud: HTMLDivElement;
   status: HTMLDivElement;
   timer: HTMLDivElement;
@@ -549,6 +550,7 @@ class DungeonCrawlerApp {
     this.container.appendChild(overlay);
 
     return {
+      overlay,
       hud,
       status,
       timer,
@@ -1913,10 +1915,16 @@ class DungeonCrawlerApp {
     this.player.pos.copy(this.spawnPoint);
     this.player.velocity.set(0, 0, 0);
     this.player.state = 'idle';
+    this.player.stateTimer = 0;
+    this.player.attackCooldown = 0;
+    this.player.dodgeCooldown = 0;
+    this.player.damageCooldown = 0;
+    this.player.blockTimer = 0;
     this.player.hasKey = false;
     this.player.hasTorch = false;
     this.player.hasWeapon = false;
     this.player.torchOn = false;
+    this.player.missionComplete = false;
     this.countdownRemaining = BALANCE.countdown.startSeconds;
     this.weapon.active = true;
     this.weapon.mesh.visible = true;
@@ -2308,6 +2316,7 @@ class DungeonCrawlerApp {
       : 'Press Enter or click Start slice.';
 
     const screenActive = this.phase !== 'playing' || this.showingControls;
+    this.ui.overlay.classList.toggle('menu-active', screenActive);
     this.ui.screen.classList.toggle('visible', screenActive);
 
     if (this.showingControls) {
