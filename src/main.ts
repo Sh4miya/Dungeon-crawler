@@ -21,6 +21,9 @@ import keyQIconUrl from './assets/kenney/input-prompts/keyboard_q_outline.svg';
 import keySpaceIconUrl from './assets/kenney/input-prompts/keyboard_space_outline.svg';
 import keyTabIconUrl from './assets/kenney/input-prompts/keyboard_tab_outline.svg';
 
+const PRIMARY_BUTTON_TEXTURE = `url("${buttonPrimaryTextureUrl}")`;
+const SECONDARY_BUTTON_TEXTURE = `url("${buttonSecondaryTextureUrl}")`;
+
 type PlayerState = 'idle' | 'attack' | 'block' | 'dodge';
 type GuardState = 'patrol' | 'suspicious' | 'chase' | 'return' | 'stunned';
 type GuardAttackPhase = 'idle' | 'windup' | 'strike' | 'recover';
@@ -488,7 +491,11 @@ class DungeonCrawlerApp {
     topRight.className = 'panel top-right';
     const objective = document.createElement('div');
     objective.className = 'objective';
-    topRight.append(objective);
+    const awareness = document.createElement('div');
+    awareness.className = 'awareness state-patrol';
+    const combat = document.createElement('div');
+    combat.className = 'combat-read';
+    topRight.append(objective, awareness, combat);
 
     const bottomLeft = document.createElement('div');
     bottomLeft.className = 'panel bottom-left';
@@ -2852,6 +2859,10 @@ class DungeonCrawlerApp {
     this.ui.timer.className = `timer${remainingSeconds <= BALANCE.countdown.criticalWarningSeconds ? ' critical' : remainingSeconds <= BALANCE.countdown.lowWarningSeconds ? ' warning' : ''}`;
     this.ui.message.textContent = this.messageTimer > 0 ? this.message : '';
     this.ui.objective.textContent = this.getPrimaryObjectiveText();
+    this.ui.awareness.textContent = this.getAwarenessReadout();
+    this.ui.awareness.className = `awareness state-${this.guard.state}`;
+    this.ui.combat.textContent = `COMBAT • ${this.getGuardCombatRead()}`;
+    this.ui.combat.className = `combat-read phase-${this.guard.attackPhase}`;
     this.ui.prompt.textContent = this.getPromptText();
     this.ui.controls.textContent = '';
     this.ui.controls.hidden = true;
