@@ -7,7 +7,15 @@ export type SoundCueName =
   | 'doorUnlock'
   | 'alertTrigger'
   | 'houndGrowl'
-  | 'houndBark';
+  | 'houndBark'
+  | 'attackWindup'
+  | 'parryWindow'
+  | 'parrySuccess'
+  | 'suspicionPulse'
+  | 'attackSwing'
+  | 'attackRecover'
+  | 'dodgeBurst'
+  | 'dodgeReady';
 
 type AudioContextCtor = new () => AudioContext;
 
@@ -78,6 +86,38 @@ export class SoundCueManager {
       case 'houndBark':
         this.beep(210, 0.05, 'square', 0.28, 0);
         this.beep(172, 0.08, 'square', 0.22, 0.04);
+        break;
+      case 'attackWindup':
+        this.beep(170, 0.16, 'sawtooth', 0.16, 0);
+        this.beep(212, 0.2, 'triangle', 0.14, 0.05);
+        break;
+      case 'parryWindow':
+        this.beep(940, 0.04, 'square', 0.16, 0);
+        this.beep(1280, 0.05, 'triangle', 0.12, 0.025);
+        break;
+      case 'parrySuccess':
+        this.beep(1240, 0.05, 'square', 0.22, 0);
+        this.beep(1680, 0.09, 'triangle', 0.18, 0.03);
+        this.beep(760, 0.12, 'sawtooth', 0.12, 0.04);
+        break;
+      case 'suspicionPulse':
+        this.beep(320, 0.05, 'triangle', 0.08, 0);
+        this.beep(410, 0.07, 'sine', 0.06, 0.03);
+        break;
+      case 'attackSwing':
+        this.beep(250, 0.06, 'square', 0.14, 0);
+        this.beep(138, 0.08, 'triangle', 0.16, 0.02);
+        break;
+      case 'attackRecover':
+        this.beep(460, 0.05, 'triangle', 0.08, 0);
+        this.beep(310, 0.08, 'sine', 0.06, 0.02);
+        break;
+      case 'dodgeBurst':
+        this.beep(520, 0.05, 'square', 0.12, 0);
+        this.beep(760, 0.06, 'triangle', 0.08, 0.015);
+        break;
+      case 'dodgeReady':
+        this.beep(680, 0.05, 'triangle', 0.08, 0);
         break;
       default:
         break;
