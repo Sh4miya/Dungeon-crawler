@@ -7,6 +7,7 @@ import { SoundCueManager } from './soundCueManager';
 
 type PlayerState = 'idle' | 'attack' | 'block' | 'dodge';
 type GuardState = 'patrol' | 'suspicious' | 'chase' | 'return' | 'stunned';
+type GuardAttackPhase = 'idle' | 'windup' | 'strike' | 'recover';
 type HoundState = 'idle' | 'released' | 'search' | 'chase' | 'attack' | 'reset' | 'down';
 type GamePhase = 'title' | 'playing' | 'death' | 'victory';
 type RoomId = 'cell-block' | 'maintenance-tunnel' | 'informant-nook' | 'warden-approach' | 'barracks-key-room' | 'kennel-edge' | 'exit-gate';
@@ -67,6 +68,8 @@ type UiRefs = {
   timer: HTMLDivElement;
   message: HTMLDivElement;
   objective: HTMLDivElement;
+  awareness: HTMLDivElement;
+  combat: HTMLDivElement;
   prompt: HTMLDivElement;
   controls: HTMLDivElement;
   crosshair: HTMLDivElement;
@@ -128,6 +131,7 @@ class DungeonCrawlerApp {
   private readonly raycaster = new THREE.Raycaster();
   private readonly sound = new SoundCueManager();
   private readonly ui: UiRefs;
+  private readonly guardFlashColor = new THREE.Color();
   private readonly pressedKeys = new Set<string>();
   private readonly pointerButtons = { left: false, right: false };
   private readonly previousButtons = { left: false, right: false };
@@ -168,6 +172,11 @@ class DungeonCrawlerApp {
     lastPatrolPos: new THREE.Vector3(28.2, PLAYER_HEIGHT * 0.5, 16.1),
     stalledFor: 0,
     footstepTimer: 0,
+    attackPhase: 'idle' as GuardAttackPhase,
+    attackTimer: 0,
+    attackCooldown: 0,
+    awarenessLevel: 0,
+    awarenessPulseTimer: 0,
   };
   private readonly torchPickup = {
     pos: new THREE.Vector3(BALANCE.torch.pickup.x, BALANCE.torch.pickup.y, BALANCE.torch.pickup.z),
@@ -282,7 +291,7 @@ class DungeonCrawlerApp {
       title: 'Ledger Scrap',
       roomId: 'cell-block',
       pos: new THREE.Vector3(6.6, 0.42, 15.1),
-      text: 'Transfer order 7B: use the thief cover story. The seal was forged after intake.',
+      text: 'Transfer order 7B: use the thief cover story. The seal was forged after intake. Watch the guard lantern dip before the heavy swing.',
       mesh: new THREE.Mesh(),
       active: true,
     },
@@ -291,7 +300,7 @@ class DungeonCrawlerApp {
       title: 'Barracks Order',
       roomId: 'barracks-key-room',
       pos: new THREE.Vector3(27.6, 0.42, 7.3),
-      text: 'Confiscated shiv moved with the brass key. Keep the framed prisoner isolated until the magistrate arrives.',
+      text: 'Confiscated shiv moved with the brass key. Keep the framed prisoner isolated until the magistrate arrives. His swing is slow after the lantern dips.',
       mesh: new THREE.Mesh(),
       active: true,
     },
@@ -459,7 +468,12 @@ class DungeonCrawlerApp {
     const topRight = document.createElement('div');
     topRight.className = 'panel top-right';
     const objective = document.createElement('div');
-    topRight.append(objective);
+    objective.className = 'objective';
+    const awareness = document.createElement('div');
+    awareness.className = 'awareness';
+    const combat = document.createElement('div');
+    combat.className = 'combat-read';
+    topRight.append(objective, awareness, combat);
 
     const bottomLeft = document.createElement('div');
     bottomLeft.className = 'panel bottom-left';
@@ -556,6 +570,8 @@ class DungeonCrawlerApp {
       timer,
       message,
       objective,
+      awareness,
+      combat,
       prompt,
       controls,
       crosshair,
@@ -696,6 +712,9 @@ class DungeonCrawlerApp {
     this.guard.state = 'chase';
     this.guard.stateTimer = Math.max(this.guard.stateTimer, BALANCE.guard.chaseMemorySeconds + 1.5);
     this.guard.lastSeen.copy(this.player.pos);
+    this.guard.attackPhase = 'idle';
+    this.guard.attackTimer = 0;
+    this.guard.attackCooldown = 0;
     this.sound.play('alertTrigger');
     this.setMessage('The Warden slams the corridor dark and charges the breach. Parry or stagger him before you bolt.');
   }
@@ -1205,6 +1224,7 @@ class DungeonCrawlerApp {
 
     this.player.attackCooldown = Math.max(0, this.player.attackCooldown - delta);
     this.player.dodgeCooldown = Math.max(0, this.player.dodgeCooldown - delta);
+    const dodgeWasCooling = this.player.dodgeCooldown > 0;
     this.player.damageCooldown = Math.max(0, this.player.damageCooldown - delta);
     this.player.blockTimer = Math.max(0, this.player.blockTimer - delta);
     this.player.stateTimer = Math.max(0, this.player.stateTimer - delta);
@@ -1247,6 +1267,7 @@ class DungeonCrawlerApp {
       this.player.stateTimer = PLAYER_DODGE_DURATION;
       this.player.dodgeCooldown = PLAYER_DODGE_COOLDOWN;
       this.player.velocity.copy(dodgeDirection.normalize().multiplyScalar(PLAYER_DODGE_SPEED));
+      this.sound.play('dodgeBurst');
       this.setMessage('Zip! Dodge window active.');
       this.pressedKeys.delete(this.bindings.dodge);
     }
@@ -1254,6 +1275,7 @@ class DungeonCrawlerApp {
     if (this.pointerButtons.right && this.player.state !== 'dodge') {
       if (this.player.state !== 'block') {
         this.player.blockTimer = PLAYER_PARRY_WINDOW;
+        this.sound.play('parryWindow');
       }
       this.player.state = 'block';
       this.player.stateTimer = 0.05;
@@ -1305,6 +1327,10 @@ class DungeonCrawlerApp {
     this.keyLight.intensity = torchActive ? BALANCE.torch.keyLightIntensityOn : BALANCE.torch.keyLightIntensityOff;
     this.torchPickup.mesh.visible = this.torchPickup.active;
 
+    if (dodgeWasCooling && this.player.dodgeCooldown === 0) {
+      this.sound.play('dodgeReady');
+    }
+
     if (this.player.health <= 0) {
       this.enterDeathState('The prison swallowed the run. Regroup, remap if you need to, and try the slice again.');
     }
@@ -1321,7 +1347,11 @@ class DungeonCrawlerApp {
     this.guardRepathTimer = Math.max(0, this.guardRepathTimer - delta);
     this.guard.stateTimer = Math.max(0, this.guard.stateTimer - delta);
     this.guard.footstepTimer = Math.max(0, this.guard.footstepTimer - delta);
+    this.guard.attackTimer = Math.max(0, this.guard.attackTimer - delta);
+    this.guard.attackCooldown = Math.max(0, this.guard.attackCooldown - delta);
+    this.guard.awarenessPulseTimer = Math.max(0, this.guard.awarenessPulseTimer - delta);
     const sight = this.getGuardSight();
+    this.updateGuardAwareness(sight, delta);
 
     if (this.guard.state !== 'stunned') {
       if (sight.seesPlayer && sight.distance <= GUARD_CHASE_DISTANCE) {
@@ -1342,14 +1372,22 @@ class DungeonCrawlerApp {
     switch (this.guard.state) {
       case 'patrol': {
         const target = this.guardWaypoints[this.guard.patrolIndex];
-        this.moveGuardTowards(target, GUARD_PATROL_SPEED, delta);
+        if (this.guard.attackPhase === 'idle') {
+          this.moveGuardTowards(target, GUARD_PATROL_SPEED, delta);
+        } else {
+          this.guard.velocity.set(0, 0, 0);
+        }
         if (this.guard.pos.distanceTo(target) < 0.3) {
           this.advanceGuardPatrol();
         }
         break;
       }
       case 'suspicious': {
-        this.moveGuardTowards(this.guard.lastSeen, GUARD_SUSPICIOUS_SPEED, delta);
+        if (this.guard.attackPhase === 'idle') {
+          this.moveGuardTowards(this.guard.lastSeen, GUARD_SUSPICIOUS_SPEED, delta);
+        } else {
+          this.guard.velocity.set(0, 0, 0);
+        }
         if (this.guard.pos.distanceTo(this.guard.lastSeen) < 0.45) {
           this.guard.velocity.set(0, 0, 0);
         }
@@ -1360,12 +1398,20 @@ class DungeonCrawlerApp {
       }
       case 'chase': {
         this.guard.lastSeen.copy(this.player.pos);
-        this.moveGuardTowards(this.guard.lastSeen, GUARD_CHASE_SPEED, delta);
+        if (this.guard.attackPhase === 'idle') {
+          this.moveGuardTowards(this.guard.lastSeen, GUARD_CHASE_SPEED, delta);
+        } else {
+          this.guard.velocity.set(0, 0, 0);
+        }
         break;
       }
       case 'return': {
         const target = this.guardWaypoints[this.guard.patrolIndex];
-        this.moveGuardTowards(target, GUARD_RETURN_SPEED, delta);
+        if (this.guard.attackPhase === 'idle') {
+          this.moveGuardTowards(target, GUARD_RETURN_SPEED, delta);
+        } else {
+          this.guard.velocity.set(0, 0, 0);
+        }
         if (this.guard.pos.distanceTo(target) < 0.4) {
           this.guard.state = 'patrol';
           this.guard.stalledFor = 0;
@@ -1392,6 +1438,7 @@ class DungeonCrawlerApp {
       this.sound.play('alertTrigger');
     }
 
+    this.updateGuardAttack(delta);
     this.updateGuardPatrolRecovery(delta);
 
     if (this.guard.velocity.lengthSq() > 0.4 && this.guard.footstepTimer === 0) {
@@ -1409,6 +1456,12 @@ class DungeonCrawlerApp {
     this.guardSightMesh.scale.setScalar(currentSightDistance / GUARD_SIGHT_DISTANCE_TORCH);
 
     const guardMaterial = this.guard.body.material as THREE.MeshStandardMaterial;
+    const attackPulse = Math.sin(performance.now() * 0.024) * 0.5 + 0.5;
+    this.guard.body.scale.set(
+      this.guard.attackPhase === 'windup' ? 1.08 : this.guard.attackPhase === 'recover' ? 0.96 : 1,
+      this.guard.attackPhase === 'windup' ? 0.92 : this.guard.state === 'stunned' ? 0.88 : 1,
+      this.guard.attackPhase === 'windup' ? 1.08 : 1,
+    );
     const colorByState: Record<GuardState, number> = {
       patrol: 0xce526a,
       suspicious: 0xf0953e,
@@ -1417,10 +1470,39 @@ class DungeonCrawlerApp {
       stunned: 0x7bd8ff,
     };
     guardMaterial.color.setHex(colorByState[this.guard.state]);
+    const guardFlashHex = this.guard.attackPhase === 'windup'
+      ? (this.guard.attackTimer <= PLAYER_PARRY_WINDOW + 0.02 ? 0xfff0a6 : 0xff9f6e)
+      : this.guard.attackPhase === 'recover'
+        ? 0x7bd8ff
+        : this.guard.state === 'stunned'
+          ? 0x9ee7ff
+          : colorByState[this.guard.state];
+    guardMaterial.emissive.copy(this.guardFlashColor.setHex(guardFlashHex));
+    guardMaterial.emissiveIntensity = this.guard.attackPhase === 'windup'
+      ? 0.5 + attackPulse * 0.65
+      : this.guard.attackPhase === 'recover'
+        ? 0.26 + attackPulse * 0.2
+        : this.guard.state === 'stunned'
+          ? 0.42
+          : 0.18;
 
-    const sightColor = sight.seesPlayer ? 0xff6b6b : this.guard.state === 'chase' || this.guard.state === 'suspicious' ? 0xf0a93e : 0xeac76a;
+    const sightColor = this.guard.attackPhase === 'windup'
+      ? 0xffd16d
+      : this.guard.attackPhase === 'strike'
+        ? 0xff6b6b
+        : sight.seesPlayer
+          ? 0xff6b6b
+          : this.guard.state === 'chase' || this.guard.state === 'suspicious'
+            ? 0xf0a93e
+            : 0xeac76a;
     this.guardSightMaterial.color.setHex(sightColor);
-    this.guardSightMaterial.opacity = sight.seesPlayer ? 0.3 : this.guard.state === 'chase' ? 0.24 : 0.16;
+    this.guardSightMaterial.opacity = this.guard.attackPhase === 'windup'
+      ? 0.34
+      : sight.seesPlayer
+        ? 0.3
+        : this.guard.state === 'chase'
+          ? 0.24
+          : 0.16;
   }
 
   private updateWorldActors(delta: number): void {
@@ -1578,7 +1660,7 @@ class DungeonCrawlerApp {
         this.guard.state = 'suspicious';
         this.guard.stateTimer = BALANCE.guard.suspiciousDurationSeconds;
         this.sound.play('alertTrigger');
-        this.setMessage('Coward panics and rats on your position. Guard attention just shifted toward the tunnel.');
+        this.setMessage('Coward: "If the lantern dips, his swing lands a heartbeat later. Block on the flash, not the shout."');
         break;
       case 'informant':
         this.objectiveHints.add('key');
@@ -1604,7 +1686,7 @@ class DungeonCrawlerApp {
       case 'silent':
         this.objectiveHints.add('frame');
         this.objectiveHints.add('locked-exit');
-        this.setMessage('The silent prisoner presses a broken court seal into your hand. Same crest. Wrong wax. You were set up.');
+        this.setMessage('The silent prisoner presses a broken court seal into your hand. Same crest. Wrong wax. You were set up — and the Warden always dips his lantern before the slow swing.');
         break;
     }
   }
@@ -1641,7 +1723,11 @@ class DungeonCrawlerApp {
     if (angle <= THREE.MathUtils.degToRad(BALANCE.player.attackArcDeg) && this.guard.state !== 'stunned') {
       this.guard.state = 'stunned';
       this.guard.stateTimer = GUARD_STUN_SECONDS;
+      this.guard.attackPhase = 'idle';
+      this.guard.attackTimer = 0;
+      this.guard.attackCooldown = 0.55;
       this.guard.velocity.set(0, 0, 0);
+      this.sound.play('parrySuccess');
       this.setMessage('Clean hit. Guard staggered.');
       return;
     }
@@ -1878,9 +1964,79 @@ class DungeonCrawlerApp {
     this.warningLight.intensity = 0;
   }
 
+
+  private updateGuardAwareness(sight: { seesPlayer: boolean; distance: number }, delta: number): void {
+    const targetAwareness = this.guard.state === 'chase'
+      ? 1
+      : sight.seesPlayer
+        ? 0.72
+        : this.guard.state === 'suspicious'
+          ? 0.6
+          : 0;
+    const rate = targetAwareness > this.guard.awarenessLevel ? 2.4 : 1.6;
+    this.guard.awarenessLevel = THREE.MathUtils.lerp(this.guard.awarenessLevel, targetAwareness, Math.min(1, delta * rate));
+
+    if (this.guard.awarenessPulseTimer === 0 && (this.guard.state === 'suspicious' || this.guard.state === 'chase' || sight.seesPlayer)) {
+      this.sound.play('suspicionPulse');
+      this.guard.awarenessPulseTimer = this.guard.state === 'chase' ? 0.42 : 0.78;
+    }
+  }
+
+  private startGuardAttack(): void {
+    if (this.guard.state === 'stunned' || this.guard.attackPhase !== 'idle' || this.guard.attackCooldown > 0) {
+      return;
+    }
+
+    this.guard.attackPhase = 'windup';
+    this.guard.attackTimer = 0.56;
+    this.guard.velocity.set(0, 0, 0);
+    this.sound.play('attackWindup');
+    this.setMessage(this.wardenEncounter.active
+      ? 'Lantern dips. The Warden is loading the heavy swing.'
+      : 'Guard shoulders in. Lantern dips before the swing.');
+  }
+
+  private updateGuardAttack(delta: number): void {
+    const distance = this.guard.pos.distanceTo(this.player.pos);
+    const inAttackRange = distance <= PLAYER_RADIUS + GUARD_RADIUS + 0.82;
+    const canAttack = this.guard.state !== 'stunned' && this.guard.state !== 'patrol' && !this.player.missionComplete;
+
+    if (canAttack && inAttackRange && this.guard.attackPhase === 'idle' && this.guard.attackCooldown === 0) {
+      this.startGuardAttack();
+    }
+
+    if (this.guard.attackPhase === 'windup') {
+      if (this.guard.attackTimer <= PLAYER_PARRY_WINDOW + 0.02 && this.guard.attackTimer > PLAYER_PARRY_WINDOW - delta) {
+        this.sound.play('parryWindow');
+      }
+      if (this.guard.attackTimer === 0) {
+        this.guard.attackPhase = 'strike';
+        this.guard.attackTimer = 0.12;
+        this.sound.play('attackSwing');
+        this.handleGuardContact();
+      }
+      return;
+    }
+
+    if (this.guard.attackPhase === 'strike' && this.guard.attackTimer === 0) {
+      this.guard.attackPhase = 'recover';
+      this.guard.attackTimer = 0.48;
+      this.guard.attackCooldown = 0.3;
+      this.sound.play('attackRecover');
+      if (this.guard.state !== 'stunned' && !this.player.missionComplete) {
+        this.setMessage(this.wardenEncounter.active ? 'Swing spent. He needs a beat to recover.' : 'Swing spent. There is your opening.');
+      }
+      return;
+    }
+
+    if (this.guard.attackPhase === 'recover' && this.guard.attackTimer === 0) {
+      this.guard.attackPhase = 'idle';
+    }
+  }
+
   private handleGuardContact(): void {
     const distance = this.guard.pos.distanceTo(this.player.pos);
-    if (distance > PLAYER_RADIUS + GUARD_RADIUS + 0.18 || this.guard.state === 'stunned' || this.player.missionComplete) {
+    if (distance > PLAYER_RADIUS + GUARD_RADIUS + 0.4 || this.guard.state === 'stunned' || this.player.missionComplete) {
       return;
     }
 
@@ -1894,10 +2050,15 @@ class DungeonCrawlerApp {
       if (this.player.blockTimer > 0) {
         this.guard.state = 'stunned';
         this.guard.stateTimer = GUARD_STUN_SECONDS;
+        this.guard.attackPhase = 'idle';
+        this.guard.attackTimer = 0;
+        this.guard.attackCooldown = 0.7;
         this.guard.velocity.set(0, 0, 0);
-        this.setMessage('Perfect parry! The guard is seeing stars.');
+        this.sound.play('parrySuccess');
+        this.setMessage('Perfect parry! Sparks fly, the guard buckles, and the lane is yours.');
       } else {
-        this.setMessage('Guard strike blocked.');
+        this.sound.play('attackRecover');
+        this.setMessage('Block held. Good save, but the parry flash was earlier.');
       }
       this.player.damageCooldown = 0.4;
       return;
@@ -1905,9 +2066,12 @@ class DungeonCrawlerApp {
 
     this.player.health -= 1;
     this.player.damageCooldown = 1;
+    this.guard.attackCooldown = 0.55;
+    this.guard.attackPhase = 'recover';
+    this.guard.attackTimer = Math.max(this.guard.attackTimer, 0.36);
     const knockback = guardToPlayer.multiplyScalar(2.3);
     this.moveBody(this.player.pos, knockback, PLAYER_RADIUS, 1);
-    this.setMessage(`Oof. Health at ${Math.max(this.player.health, 0)}.`);
+    this.setMessage(`Heavy hit. Health at ${Math.max(this.player.health, 0)}.`);
   }
 
   private respawnPlayer(): void {
@@ -1953,6 +2117,11 @@ class DungeonCrawlerApp {
     this.guard.patrolIndex = 0;
     this.guard.lastPatrolPos.copy(this.guard.pos);
     this.guard.stalledFor = 0;
+    this.guard.attackPhase = 'idle';
+    this.guard.attackTimer = 0;
+    this.guard.attackCooldown = 0;
+    this.guard.awarenessLevel = 0;
+    this.guard.awarenessPulseTimer = 0;
     this.clearGuardPath();
     this.hound.pos.copy(this.houndSpawn);
     this.hound.velocity.set(0, 0, 0);
@@ -2265,6 +2434,33 @@ class DungeonCrawlerApp {
     drawMarker(this.player.pos.x, this.player.pos.z, '#82ffa7', 'you');
   }
 
+  private getGuardCombatRead(): string {
+    const attackLabel: Record<GuardAttackPhase, string> = {
+      idle: this.guard.state === 'stunned' ? 'stunned' : this.guard.state === 'return' ? 'recovering lane' : 'looking for an opening',
+      windup: this.player.blockTimer > 0.06 ? 'wind-up — parry flash live' : 'wind-up — lantern dipping',
+      strike: 'strike committed',
+      recover: 'recovering after swing',
+    };
+    return attackLabel[this.guard.attackPhase];
+  }
+
+  private getAwarenessReadout(): string {
+    const percent = Math.round(this.guard.awarenessLevel * 100);
+    if (this.guard.state === 'chase') {
+      return `CHASE ${percent}% • sprint or break line now`;
+    }
+    if (this.guard.state === 'suspicious') {
+      return `SUSPICION ${percent}% • cone hot, footsteps louder`;
+    }
+    if (percent >= 55) {
+      return `WATCH ${percent}% • one more peek will spike it`;
+    }
+    if (percent >= 20) {
+      return `MURMUR ${percent}% • you are brushing the cone`;
+    }
+    return 'CALM 0% • keep the torch low and stay off the cone';
+  }
+
   private updateUi(): void {
     const guardLabel: Record<GuardState, string> = {
       patrol: this.wardenEncounter.active || this.wardenEncounter.cleared ? 'warden stalking' : 'patrolling',
@@ -2305,14 +2501,20 @@ class DungeonCrawlerApp {
         : this.wardenEncounter.cleared
           ? 'Warden staggered — sprint through the open gate.'
           : `Room: ${roomName}  •  Objective: torch → shiv → key → unlock gate → beat the Warden`;
+    this.ui.awareness.textContent = `Awareness ${this.getAwarenessReadout()}`;
+    this.ui.awareness.className = `awareness state-${this.guard.state}`;
+    this.ui.combat.textContent = `Combat ${this.getGuardCombatRead()}`;
+    this.ui.combat.className = `combat-read phase-${this.guard.attackPhase}`;
     this.ui.prompt.textContent = this.getPromptText();
     this.ui.controls.textContent = `${this.getControlsSummary()}  •  ${this.getControlsSupportText()}  •  Press C any time for the remap screen.`;
     this.ui.centerHint.textContent = this.phase === 'playing'
       ? this.showingControls
         ? 'Controls open — choose a binding, then press a key.'
         : this.wardenEncounter.active
-          ? 'Warden finale live — parry or stagger him, then run the gate.'
-          : 'Click to lock pointer. C opens controls. Mouse attack/block stay fixed.'
+          ? `Warden finale live — ${this.player.blockTimer > 0.06 ? 'flash means parry now.' : this.guard.attackPhase === 'recover' ? 'swing spent — punish or run.' : 'watch the lantern dip.'}`
+          : this.guard.state === 'suspicious' || this.guard.state === 'chase'
+            ? 'Guard awareness is climbing — orange means suspicious, red means chase.'
+            : 'Click to lock pointer. C opens controls. Mouse attack/block stay fixed.'
       : 'Press Enter or click Start slice.';
 
     const screenActive = this.phase !== 'playing' || this.showingControls;
