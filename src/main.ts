@@ -4,6 +4,22 @@ import { BALANCE } from './gameBalance';
 import { findGuardPath, hasClearPath, type Rect as NavigationRect } from './guardNavigation';
 import { moveCircle, type Rect as CollisionRect } from './physics';
 import { SoundCueManager } from './soundCueManager';
+import stoneFloorTextureUrl from './assets/poly-haven/stone-floor-diff-1k.jpg';
+import oldStoneWallTextureUrl from './assets/poly-haven/old-stone-wall-diff-1k.jpg';
+import buttonPrimaryTextureUrl from './assets/kenney/ui-pack/button_rectangle_depth_gradient.png';
+import buttonSecondaryTextureUrl from './assets/kenney/ui-pack/button_rectangle_line.png';
+import iconPlayUrl from './assets/kenney/ui-pack/icon_play_light.png';
+import iconRepeatUrl from './assets/kenney/ui-pack/icon_repeat_light.png';
+import iconArrowDownUrl from './assets/kenney/ui-pack/icon_arrow_down_light.png';
+import iconArrowUpUrl from './assets/kenney/ui-pack/icon_arrow_up_light.png';
+import keyWIconUrl from './assets/kenney/input-prompts/keyboard_w_outline.svg';
+import keyAIconUrl from './assets/kenney/input-prompts/keyboard_a_outline.svg';
+import keySIconUrl from './assets/kenney/input-prompts/keyboard_s_outline.svg';
+import keyDIconUrl from './assets/kenney/input-prompts/keyboard_d_outline.svg';
+import keyEIconUrl from './assets/kenney/input-prompts/keyboard_e_outline.svg';
+import keyQIconUrl from './assets/kenney/input-prompts/keyboard_q_outline.svg';
+import keySpaceIconUrl from './assets/kenney/input-prompts/keyboard_space_outline.svg';
+import keyTabIconUrl from './assets/kenney/input-prompts/keyboard_tab_outline.svg';
 
 type PlayerState = 'idle' | 'attack' | 'block' | 'dodge';
 type GuardState = 'patrol' | 'suspicious' | 'chase' | 'return' | 'stunned';
@@ -515,26 +531,36 @@ class DungeonCrawlerApp {
     startButton.className = 'screen-button';
     startButton.type = 'button';
     startButton.textContent = 'Start slice';
+    startButton.style.setProperty('--screen-button-icon', `url("${iconPlayUrl}")`);
+    startButton.style.setProperty('--screen-button-texture', PRIMARY_BUTTON_TEXTURE);
     startButton.addEventListener('click', () => this.startRun());
     const controlsButton = document.createElement('button');
     controlsButton.className = 'screen-button secondary';
     controlsButton.type = 'button';
     controlsButton.textContent = 'Controls & remap';
+    controlsButton.style.setProperty('--screen-button-icon', `url("${iconArrowDownUrl}")`);
+    controlsButton.style.setProperty('--screen-button-texture', SECONDARY_BUTTON_TEXTURE);
     controlsButton.addEventListener('click', () => this.openControls());
     const backButton = document.createElement('button');
     backButton.className = 'screen-button secondary';
     backButton.type = 'button';
     backButton.textContent = 'Back';
+    backButton.style.setProperty('--screen-button-icon', `url("${iconArrowUpUrl}")`);
+    backButton.style.setProperty('--screen-button-texture', SECONDARY_BUTTON_TEXTURE);
     backButton.addEventListener('click', () => this.closeControls());
     const restartButton = document.createElement('button');
     restartButton.className = 'screen-button';
     restartButton.type = 'button';
     restartButton.textContent = 'Restart run';
+    restartButton.style.setProperty('--screen-button-icon', `url("${iconRepeatUrl}")`);
+    restartButton.style.setProperty('--screen-button-texture', PRIMARY_BUTTON_TEXTURE);
     restartButton.addEventListener('click', () => this.restartRun());
     const titleButton = document.createElement('button');
     titleButton.className = 'screen-button secondary';
     titleButton.type = 'button';
     titleButton.textContent = 'Return to title';
+    titleButton.style.setProperty('--screen-button-icon', `url("${iconArrowUpUrl}")`);
+    titleButton.style.setProperty('--screen-button-texture', SECONDARY_BUTTON_TEXTURE);
     titleButton.addEventListener('click', () => this.returnToTitle());
     const controlsPanel = document.createElement('div');
     controlsPanel.className = 'binding-grid';
@@ -650,6 +676,14 @@ class DungeonCrawlerApp {
       const waiting = this.pendingRebind === action;
       button.textContent = waiting ? 'Press a key…' : this.formatBinding(this.bindings[action]);
       button.classList.toggle('listening', waiting);
+      button.style.setProperty('--screen-button-texture', SECONDARY_BUTTON_TEXTURE);
+      const iconUrl = waiting ? null : this.getBindingPromptIcon(this.bindings[action]);
+      if (iconUrl) {
+        button.style.setProperty('--binding-icon', `url("${iconUrl}")`);
+      } else {
+        button.style.removeProperty('--binding-icon');
+      }
+      button.classList.toggle('has-icon', Boolean(iconUrl));
     }
   }
 
@@ -658,6 +692,20 @@ class DungeonCrawlerApp {
     if (code.startsWith('Key')) return code.slice(3);
     if (code.startsWith('Digit')) return code.slice(5);
     return code.replace('Arrow', 'Arrow ');
+  }
+
+  private getBindingPromptIcon(code: string): string | null {
+    const promptIcons: Record<string, string> = {
+      KeyW: keyWIconUrl,
+      KeyA: keyAIconUrl,
+      KeyS: keySIconUrl,
+      KeyD: keyDIconUrl,
+      KeyE: keyEIconUrl,
+      KeyQ: keyQIconUrl,
+      Space: keySpaceIconUrl,
+      Tab: keyTabIconUrl,
+    };
+    return promptIcons[code] ?? null;
   }
 
   private isActionPressed(action: BindingAction): boolean {
@@ -984,9 +1032,24 @@ class DungeonCrawlerApp {
   };
 
   private createLevel(): void {
+    const floorTexture = new THREE.TextureLoader().load(stoneFloorTextureUrl);
+    floorTexture.colorSpace = THREE.SRGBColorSpace;
+    floorTexture.wrapS = THREE.RepeatWrapping;
+    floorTexture.wrapT = THREE.RepeatWrapping;
+    floorTexture.repeat.set(6, 4);
+
+    const wallTexture = new THREE.TextureLoader().load(oldStoneWallTextureUrl);
+    wallTexture.colorSpace = THREE.SRGBColorSpace;
+    wallTexture.wrapS = THREE.RepeatWrapping;
+    wallTexture.wrapT = THREE.RepeatWrapping;
+    wallTexture.repeat.set(4, 1.5);
+
+    const floorMaterial = new THREE.MeshStandardMaterial({ map: floorTexture, color: 0x9aa9bf, roughness: 0.96, metalness: 0.02 });
+    const wallMaterial = new THREE.MeshStandardMaterial({ map: wallTexture, color: 0xbcc6d8, roughness: 0.82, metalness: 0.04 });
+
     const floor = new THREE.Mesh(
       new THREE.PlaneGeometry(WORLD_WIDTH, WORLD_DEPTH),
-      new THREE.MeshStandardMaterial({ color: 0x1a2230, roughness: 0.92, metalness: 0.02 }),
+      floorMaterial,
     );
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
@@ -1011,7 +1074,7 @@ class DungeonCrawlerApp {
     const addWall = (x: number, z: number, width: number, depth: number, height = 2.8): void => {
       const mesh = new THREE.Mesh(
         new THREE.BoxGeometry(width, height, depth),
-        new THREE.MeshStandardMaterial({ color: 0x6b7789, roughness: 0.72, metalness: 0.08 }),
+        wallMaterial,
       );
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -2823,9 +2886,9 @@ class DungeonCrawlerApp {
     this.ui.backButton.hidden = true;
 
     if (this.phase === 'title') {
-      this.ui.screenEyebrow.textContent = 'Vertical slice';
+      this.ui.screenEyebrow.textContent = 'Break the prison wing before the Warden seals it.';
       this.ui.screenTitle.textContent = 'Dungeon Crawler';
-      this.ui.screenBody.textContent = 'Break out of the prison wing, scavenge a torch, grab a shiv, steal the brass key, and survive the Warden at the gate.';
+      this.ui.screenBody.textContent = 'Break out of the prison wing, scavenge a torch, grab a shiv, steal the brass key, and survive the Warden at the gate. The title card now uses Kenney UI textures and the remap screen carries Kenney keyboard prompts so the controls read fast.';
       this.ui.startButton.hidden = false;
       this.ui.controlsButton.hidden = false;
       this.ui.restartButton.hidden = true;
