@@ -84,8 +84,6 @@ type UiRefs = {
   timer: HTMLDivElement;
   message: HTMLDivElement;
   objective: HTMLDivElement;
-  awareness: HTMLDivElement;
-  combat: HTMLDivElement;
   prompt: HTMLDivElement;
   controls: HTMLDivElement;
   crosshair: HTMLDivElement;
@@ -532,35 +530,35 @@ class DungeonCrawlerApp {
     startButton.type = 'button';
     startButton.textContent = 'Start slice';
     startButton.style.setProperty('--screen-button-icon', `url("${iconPlayUrl}")`);
-    startButton.style.setProperty('--screen-button-texture', PRIMARY_BUTTON_TEXTURE);
+    startButton.style.setProperty('--screen-button-texture', `url("${buttonPrimaryTextureUrl}")`);
     startButton.addEventListener('click', () => this.startRun());
     const controlsButton = document.createElement('button');
     controlsButton.className = 'screen-button secondary';
     controlsButton.type = 'button';
     controlsButton.textContent = 'Controls & remap';
     controlsButton.style.setProperty('--screen-button-icon', `url("${iconArrowDownUrl}")`);
-    controlsButton.style.setProperty('--screen-button-texture', SECONDARY_BUTTON_TEXTURE);
+    controlsButton.style.setProperty('--screen-button-texture', `url("${buttonSecondaryTextureUrl}")`);
     controlsButton.addEventListener('click', () => this.openControls());
     const backButton = document.createElement('button');
     backButton.className = 'screen-button secondary';
     backButton.type = 'button';
     backButton.textContent = 'Back';
     backButton.style.setProperty('--screen-button-icon', `url("${iconArrowUpUrl}")`);
-    backButton.style.setProperty('--screen-button-texture', SECONDARY_BUTTON_TEXTURE);
+    backButton.style.setProperty('--screen-button-texture', `url("${buttonSecondaryTextureUrl}")`);
     backButton.addEventListener('click', () => this.closeControls());
     const restartButton = document.createElement('button');
     restartButton.className = 'screen-button';
     restartButton.type = 'button';
     restartButton.textContent = 'Restart run';
     restartButton.style.setProperty('--screen-button-icon', `url("${iconRepeatUrl}")`);
-    restartButton.style.setProperty('--screen-button-texture', PRIMARY_BUTTON_TEXTURE);
+    restartButton.style.setProperty('--screen-button-texture', `url("${buttonPrimaryTextureUrl}")`);
     restartButton.addEventListener('click', () => this.restartRun());
     const titleButton = document.createElement('button');
     titleButton.className = 'screen-button secondary';
     titleButton.type = 'button';
     titleButton.textContent = 'Return to title';
     titleButton.style.setProperty('--screen-button-icon', `url("${iconArrowUpUrl}")`);
-    titleButton.style.setProperty('--screen-button-texture', SECONDARY_BUTTON_TEXTURE);
+    titleButton.style.setProperty('--screen-button-texture', `url("${buttonSecondaryTextureUrl}")`);
     titleButton.addEventListener('click', () => this.returnToTitle());
     const controlsPanel = document.createElement('div');
     controlsPanel.className = 'binding-grid';
@@ -595,8 +593,6 @@ class DungeonCrawlerApp {
       timer,
       message,
       objective,
-      awareness,
-      combat,
       prompt,
       controls,
       crosshair,
@@ -672,11 +668,10 @@ class DungeonCrawlerApp {
     const actions = Object.keys(this.bindingLabels) as BindingAction[];
     for (const action of actions) {
       const button = this.bindingButtons[action];
-      if (!button) continue;
       const waiting = this.pendingRebind === action;
       button.textContent = waiting ? 'Press a key…' : this.formatBinding(this.bindings[action]);
       button.classList.toggle('listening', waiting);
-      button.style.setProperty('--screen-button-texture', SECONDARY_BUTTON_TEXTURE);
+      button.style.setProperty('--screen-button-texture', `url("${buttonSecondaryTextureUrl}")`);
       const iconUrl = waiting ? null : this.getBindingPromptIcon(this.bindings[action]);
       if (iconUrl) {
         button.style.setProperty('--binding-icon', `url("${iconUrl}")`);
