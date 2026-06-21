@@ -118,6 +118,7 @@ const TORCH_ON_INTENSITY = BALANCE.torch.onIntensity;
 const TORCH_OFF_INTENSITY = BALANCE.torch.offIntensity;
 const GUARD_NAV_STEP = BALANCE.guard.navStep;
 const MESSAGE_DURATION = BALANCE.ui.messageDurationSeconds;
+const HUD_HINT_SECONDS = 8;
 
 class DungeonCrawlerApp {
   private readonly container: HTMLElement;
@@ -379,6 +380,8 @@ class DungeonCrawlerApp {
   private messageTimer: number = MESSAGE_DURATION;
   private countdownRemaining: number = BALANCE.countdown.startSeconds;
   private houndReleased = false;
+  private hudHintTimer = HUD_HINT_SECONDS;
+  private hudHintDismissed = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -459,6 +462,7 @@ class DungeonCrawlerApp {
     const topRight = document.createElement('div');
     topRight.className = 'panel top-right';
     const objective = document.createElement('div');
+    objective.className = 'objective';
     topRight.append(objective);
 
     const bottomLeft = document.createElement('div');
@@ -608,6 +612,8 @@ class DungeonCrawlerApp {
     this.controlsReturnPhase = this.phase;
     this.showingControls = true;
     this.pendingRebind = null;
+    this.hudHintDismissed = true;
+    this.hudHintTimer = 0;
     this.syncBindingButtons();
     if (document.pointerLockElement === this.renderer.domElement) {
       document.exitPointerLock();
@@ -661,6 +667,90 @@ class DungeonCrawlerApp {
 
   private getControlsSupportText(): string {
     return `Remap keyboard actions here. Mouse attack/block stay fixed so the Warden duel still reads cleanly.`;
+  }
+
+  private getPrimaryObjectiveText(): string {
+    if (this.player.missionComplete) {
+      return 'Exit gate breached. Prison slice clear.';
+    }
+
+    if (this.wardenEncounter.active) {
+      return 'Finale live: parry or stagger the Warden, then break for the gate.';
+    }
+
+    if (this.wardenEncounter.cleared) {
+      return 'Warden staggered. Sprint through the open gate.';
+    }
+
+    if (!this.player.hasTorch) {
+      return 'Find a torch in the cell block side halls.';
+    }
+
+    if (!this.player.hasWeapon) {
+      return 'Raid the barracks for the confiscated shiv.';
+    }
+
+    if (!this.player.hasKey) {
+      return 'Secure the brass key before the kennel wakes up.';
+    }
+
+    if (this.door.locked) {
+      return 'Use the brass key to unlock the exit gate.';
+    }
+
+    return 'Open gate. Survive the Warden and escape.';
+  }
+
+  private getControlsPanelBody(): string {
+    const objectiveTrail = [
+      this.player.hasTorch ? 'torch ✓' : 'torch',
+      this.player.hasWeapon ? 'shiv ✓' : 'shiv',
+      this.player.hasKey ? 'key ✓' : 'key',
+      this.door.locked ? 'gate locked' : 'gate open',
+      this.wardenEncounter.cleared ? 'warden down ✓' : this.wardenEncounter.active ? 'warden engaged' : 'warden waiting',
+    ].join(' → ');
+    const remainingSeconds = Math.ceil(this.countdownRemaining);
+    const roomName = this.rooms.find((room) => room.id === this.currentRoomId)?.name ?? 'Unknown';
+
+    return [
+      this.getControlsSummary(),
+      '',
+      this.getControlsSupportText(),
+      '',
+      `Objective: ${this.getPrimaryObjectiveText()}`,
+      `Progress: ${objectiveTrail}`,
+      `Room: ${roomName}`,
+      `Debug snapshot: player=${this.player.state} · guard=${this.guard.state} · hound=${this.hound.state} · timer=${remainingSeconds}s${this.player.hasTorch && this.player.torchOn ? ' · torch drain x1.65' : ''}`,
+    ].join('\n');
+  }
+
+  private getHudMarkup(): string {
+    const healthFilled = '♥'.repeat(Math.max(this.player.health, 0));
+    const healthEmpty = '·'.repeat(Math.max(0, PLAYER_MAX_HEALTH - this.player.health));
+    const dodgeLabel = this.player.dodgeCooldown > 0 ? `${this.player.dodgeCooldown.toFixed(1)}s` : 'ready';
+
+    return [
+      `<span class="hud-chip health${this.player.health <= 2 ? ' danger' : ''}"><strong>HP</strong> ${healthFilled}${healthEmpty}</span>`,
+      `<span class="hud-chip"><strong>⚔</strong> ${this.player.hasWeapon ? 'Shiv' : 'Bare'}</span>`,
+      `<span class="hud-chip${this.player.hasKey ? ' ready' : ''}"><strong>🗝</strong> ${this.player.hasKey ? 'Key secured' : 'No key'}</span>`,
+      `<span class="hud-chip${this.player.hasTorch && this.player.torchOn ? ' ready' : ''}"><strong>🔥</strong> ${this.player.hasTorch ? (this.player.torchOn ? 'Torch lit' : 'Torch carried') : 'No torch'}</span>`,
+      `<span class="hud-chip${this.player.dodgeCooldown <= 0 ? ' ready' : ''}"><strong>⇢</strong> Dodge ${dodgeLabel}</span>`,
+    ].join('');
+  }
+
+  private getStatusMarkup(): string {
+    const guardAlert = this.guard.state === 'chase' || this.wardenEncounter.active;
+    const guardWarning = this.guard.state === 'suspicious' || this.guard.state === 'stunned';
+    const houndAlert = this.hound.state === 'chase' || this.hound.state === 'attack';
+    const houndWarning = this.hound.state === 'released' || this.hound.state === 'search';
+    const playerAlert = this.player.state === 'attack' || this.player.state === 'dodge';
+    const playerWarning = this.player.state === 'block';
+
+    return [
+      `<span class="status-chip${guardAlert ? ' danger' : guardWarning ? ' warning' : ''}"><span class="status-icon">👁</span><span class="status-copy"><strong>${this.wardenEncounter.active || this.wardenEncounter.cleared ? 'Warden' : 'Guard'}</strong><small>${this.guard.state}</small></span></span>`,
+      `<span class="status-chip${houndAlert ? ' danger' : houndWarning ? ' warning' : ''}"><span class="status-icon">🐕</span><span class="status-copy"><strong>Hound</strong><small>${this.hound.state}</small></span></span>`,
+      `<span class="status-chip${playerAlert ? ' ready' : playerWarning ? ' warning' : ''}"><span class="status-icon">🧍</span><span class="status-copy"><strong>You</strong><small>${this.player.state}</small></span></span>`,
+    ].join('');
   }
 
   private enterDeathState(reason: string): void {
@@ -1150,6 +1240,13 @@ class DungeonCrawlerApp {
 
   private update(delta: number): void {
     this.messageTimer = Math.max(0, this.messageTimer - delta);
+
+    if (this.phase === 'playing' && !this.showingControls && !this.hudHintDismissed) {
+      this.hudHintTimer = Math.max(0, this.hudHintTimer - delta);
+      if (this.hudHintTimer === 0) {
+        this.hudHintDismissed = true;
+      }
+    }
 
     if (this.phase === 'playing' && !this.showingControls) {
       this.updateCountdown(delta);
@@ -2266,53 +2363,38 @@ class DungeonCrawlerApp {
   }
 
   private updateUi(): void {
-    const guardLabel: Record<GuardState, string> = {
-      patrol: this.wardenEncounter.active || this.wardenEncounter.cleared ? 'warden stalking' : 'patrolling',
-      suspicious: this.wardenEncounter.active || this.wardenEncounter.cleared ? 'warden suspicious' : 'suspicious',
-      chase: this.wardenEncounter.active || this.wardenEncounter.cleared ? 'warden charging' : 'chasing',
-      return: this.wardenEncounter.active || this.wardenEncounter.cleared ? 'warden resetting' : 'resetting',
-      stunned: this.wardenEncounter.active || this.wardenEncounter.cleared ? 'warden staggered' : 'stunned',
-    };
-    const houndLabel: Record<HoundState, string> = {
-      idle: 'kenneled',
-      released: 'released',
-      search: 'searching',
-      chase: 'chasing',
-      attack: 'attacking',
-      reset: 'resetting',
-      down: 'down',
-    };
     const remainingSeconds = Math.ceil(this.countdownRemaining);
     const minutes = Math.floor(remainingSeconds / 60)
       .toString()
       .padStart(2, '0');
     const seconds = (remainingSeconds % 60).toString().padStart(2, '0');
     const minimapVisible = this.isActionPressed('minimap') || this.player.missionComplete;
-    const roomName = this.rooms.find((room) => room.id === this.currentRoomId)?.name ?? 'Unknown';
+    const timerRelevant = this.houndReleased
+      || this.currentRoomId === 'kennel-edge'
+      || this.objectiveHints.has('kennel')
+      || remainingSeconds <= BALANCE.countdown.lowWarningSeconds;
 
     this.drawMinimap();
     this.ui.minimapFrame.classList.toggle('visible', minimapVisible);
 
-    this.ui.hud.textContent = `HP ${'♥'.repeat(Math.max(this.player.health, 0))}${'·'.repeat(Math.max(0, PLAYER_MAX_HEALTH - this.player.health))}  •  Weapon ${this.player.hasWeapon ? 'shiv' : 'bare'}  •  Key ${this.player.hasKey ? 'yes' : 'no'}  •  Torch ${this.player.hasTorch ? (this.player.torchOn ? 'lit' : 'carried') : 'missing'}  •  Dodge ${this.player.dodgeCooldown > 0 ? this.player.dodgeCooldown.toFixed(1) : 'ready'}`;
-    this.ui.status.textContent = `Guard ${guardLabel[this.guard.state]}  •  Hound ${houndLabel[this.hound.state]}  •  Player ${this.player.state}`;
+    this.ui.hud.innerHTML = this.getHudMarkup();
+    this.ui.status.innerHTML = this.getStatusMarkup();
+    this.ui.timer.hidden = !timerRelevant;
     this.ui.timer.textContent = `KENNEL TIMER ${minutes}:${seconds}${this.player.hasTorch && this.player.torchOn ? '  •  drain x1.65' : ''}`;
     this.ui.timer.className = `timer${remainingSeconds <= BALANCE.countdown.criticalWarningSeconds ? ' critical' : remainingSeconds <= BALANCE.countdown.lowWarningSeconds ? ' warning' : ''}`;
     this.ui.message.textContent = this.messageTimer > 0 ? this.message : '';
-    this.ui.objective.textContent = this.player.missionComplete
-      ? 'Exit gate breached — compact prison slice clear.'
-      : this.wardenEncounter.active
-        ? 'Finale: survive the blackout, bait the Warden into a bad swing, then take the gate.'
-        : this.wardenEncounter.cleared
-          ? 'Warden staggered — sprint through the open gate.'
-          : `Room: ${roomName}  •  Objective: torch → shiv → key → unlock gate → beat the Warden`;
+    this.ui.objective.textContent = this.getPrimaryObjectiveText();
     this.ui.prompt.textContent = this.getPromptText();
-    this.ui.controls.textContent = `${this.getControlsSummary()}  •  ${this.getControlsSupportText()}  •  Press C any time for the remap screen.`;
+    this.ui.controls.textContent = '';
+    this.ui.controls.hidden = true;
     this.ui.centerHint.textContent = this.phase === 'playing'
       ? this.showingControls
         ? 'Controls open — choose a binding, then press a key.'
         : this.wardenEncounter.active
           ? 'Warden finale live — parry or stagger him, then run the gate.'
-          : 'Click to lock pointer. C opens controls. Mouse attack/block stay fixed.'
+          : !this.hudHintDismissed
+            ? 'Scout tip: click to lock pointer. Hold Tab for the map. Press C for controls, remap, and full debug details.'
+            : ''
       : 'Press Enter or click Start slice.';
 
     const screenActive = this.phase !== 'playing' || this.showingControls;
@@ -2322,7 +2404,7 @@ class DungeonCrawlerApp {
     if (this.showingControls) {
       this.ui.screenEyebrow.textContent = 'Controls';
       this.ui.screenTitle.textContent = 'Remap the keyboard';
-      this.ui.screenBody.textContent = `${this.getControlsSummary()}\n\n${this.getControlsSupportText()}`;
+      this.ui.screenBody.textContent = this.getControlsPanelBody();
       this.ui.controlsPanel.hidden = false;
       this.ui.startButton.hidden = true;
       this.ui.controlsButton.hidden = true;
