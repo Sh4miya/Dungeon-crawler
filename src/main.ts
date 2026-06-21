@@ -87,6 +87,8 @@ type UiRefs = {
   timer: HTMLDivElement;
   message: HTMLDivElement;
   objective: HTMLDivElement;
+  awareness: HTMLDivElement;
+  combat: HTMLDivElement;
   prompt: HTMLDivElement;
   controls: HTMLDivElement;
   crosshair: HTMLDivElement;
@@ -139,6 +141,8 @@ const TORCH_OFF_INTENSITY = BALANCE.torch.offIntensity;
 const GUARD_NAV_STEP = BALANCE.guard.navStep;
 const MESSAGE_DURATION = BALANCE.ui.messageDurationSeconds;
 const HUD_HINT_SECONDS = 8;
+const SPAWN_YAW = Math.PI / 2;
+const SPAWN_PITCH = -0.18;
 
 class DungeonCrawlerApp {
   private readonly container: HTMLElement;
@@ -400,8 +404,8 @@ class DungeonCrawlerApp {
     torchJamTimer: 0,
   };
 
-  private yaw = Math.PI;
-  private pitch = -0.2;
+  private yaw = SPAWN_YAW;
+  private pitch = SPAWN_PITCH;
   private message = 'Scout report: the block, tunnel, barracks, kennel edge, and gate are all part of one tight prison loop. Find a weapon, secure the brass key, then crack the gate.';
   private messageTimer: number = MESSAGE_DURATION;
   private countdownRemaining: number = BALANCE.countdown.startSeconds;
@@ -600,6 +604,8 @@ class DungeonCrawlerApp {
       timer,
       message,
       objective,
+      awareness,
+      combat,
       prompt,
       controls,
       crosshair,
@@ -630,6 +636,7 @@ class DungeonCrawlerApp {
     this.pendingRebind = null;
     this.clearPressedInput();
     this.clock.getDelta();
+    this.requestPointerLock();
   }
 
   private restartRun(): void {
@@ -915,9 +922,7 @@ class DungeonCrawlerApp {
       if (this.phase !== 'playing' || this.showingControls) {
         return;
       }
-      if (document.pointerLockElement !== this.renderer.domElement) {
-        this.renderer.domElement.requestPointerLock();
-      }
+      this.requestPointerLock();
     });
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
     window.addEventListener('mousemove', this.onMouseMove);
@@ -937,6 +942,14 @@ class DungeonCrawlerApp {
   private readonly onPointerLockChange = (): void => {
     this.ui.crosshair.classList.toggle('active', document.pointerLockElement === this.renderer.domElement && this.phase === 'playing' && !this.showingControls);
   };
+
+  private requestPointerLock(): void {
+    if (document.pointerLockElement === this.renderer.domElement || this.phase !== 'playing' || this.showingControls) {
+      return;
+    }
+
+    this.renderer.domElement.requestPointerLock();
+  }
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (event.code === this.bindings.minimap || event.code === 'Tab') {
@@ -2448,6 +2461,9 @@ class DungeonCrawlerApp {
   private respawnPlayer(): void {
     this.player.health = PLAYER_MAX_HEALTH;
     this.player.pos.copy(this.spawnPoint);
+    this.yaw = SPAWN_YAW;
+    this.pitch = SPAWN_PITCH;
+    this.player.facing.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
     this.player.velocity.set(0, 0, 0);
     this.player.state = 'idle';
     this.player.stateTimer = 0;
