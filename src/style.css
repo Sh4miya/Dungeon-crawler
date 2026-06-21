@@ -97,6 +97,66 @@ canvas {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.hud,
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.hud-chip,
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.32rem 0.52rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  line-height: 1;
+}
+
+.hud-chip strong,
+.status-copy strong {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hud-chip.ready,
+.status-chip.ready {
+  border-color: rgba(111, 226, 166, 0.38);
+  color: #d9ffe9;
+}
+
+.hud-chip.warning,
+.status-chip.warning {
+  border-color: rgba(255, 192, 102, 0.38);
+  color: #ffe0a6;
+}
+
+.hud-chip.danger,
+.status-chip.danger {
+  border-color: rgba(255, 119, 119, 0.45);
+  color: #ffd0d0;
+}
+
+.status-icon {
+  font-size: 0.95rem;
+}
+
+.status-copy {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.status-copy small {
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+
 .timer {
   color: #ffe08f;
   letter-spacing: 0.08em;
@@ -116,6 +176,16 @@ canvas {
 .prompt {
   color: #8fe3ff;
   min-height: 1.2em;
+}
+
+.top-right .objective {
+  max-width: min(25rem, 42vw);
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.7rem;
+  background: rgba(5, 8, 14, 0.58);
+  border: 1px solid rgba(143, 227, 255, 0.16);
+  color: #f1f7ff;
+  line-height: 1.35;
 }
 
 .controls {
