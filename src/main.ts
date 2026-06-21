@@ -274,9 +274,9 @@ class DungeonCrawlerApp {
     },
     {
       id: 'exit-gate',
-      name: 'Exit Gate Placeholder',
+      name: 'Exit Portcullis',
       minimapLabel: 'EG',
-      discoverMessage: 'Exit gate chamber sighted. One locked threshold between you and daylight.',
+      discoverMessage: 'Exit portcullis sighted. One locked threshold between you and daylight.',
       color: 0x537d73,
       rect: { minX: 11.3, maxX: 16.1, minZ: 9.8, maxZ: 14.3 },
     },
@@ -1067,6 +1067,9 @@ class DungeonCrawlerApp {
     exitMarker.rotation.x = -Math.PI / 2;
     exitMarker.position.set((this.exitZone.minX + this.exitZone.maxX) * 0.5, 0.03, (this.exitZone.minZ + this.exitZone.maxZ) * 0.5);
     this.scene.add(exitMarker);
+
+    this.addLandmarks();
+    this.addGuidanceLighting();
   }
 
   private createSightConeGeometry(radius: number, fov: number, segments = 40): THREE.ShapeGeometry {
@@ -1133,6 +1136,7 @@ class DungeonCrawlerApp {
     );
     this.key.mesh.castShadow = true;
     this.key.mesh.position.copy(this.key.pos);
+    this.key.mesh.add(this.createPickupBeacon('BRASS KEY', 0xffd56b, 0.7));
     this.scene.add(this.key.mesh);
 
     const torchHandle = new THREE.Mesh(
@@ -1149,6 +1153,7 @@ class DungeonCrawlerApp {
     this.torchPickup.mesh.add(torchHandle, torchFlame);
     this.torchPickup.mesh.position.copy(this.torchPickup.pos);
     this.torchPickup.mesh.rotation.y = 0.7;
+    this.torchPickup.mesh.add(this.createPickupBeacon('TORCH', 0x7fd6ff, 0.78));
     this.scene.add(this.torchPickup.mesh);
 
     this.hound.mesh = new THREE.Group();
@@ -1201,6 +1206,7 @@ class DungeonCrawlerApp {
     this.weapon.mesh.position.copy(this.weapon.pos);
     this.weapon.mesh.rotation.x = 0.45;
     this.weapon.mesh.rotation.z = 0.22;
+    this.weapon.mesh.add(this.createPickupBeacon('SHIV', 0xff8e73, 0.78));
     this.scene.add(this.weapon.mesh);
 
     for (const note of this.notePickups) {
@@ -1243,6 +1249,214 @@ class DungeonCrawlerApp {
     head.castShadow = true;
     prisoner.add(body, head);
     return prisoner;
+  }
+
+  private createPickupBeacon(label: string, color: number, height: number): THREE.Group {
+    const beacon = new THREE.Group();
+
+    const plate = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.24, 0.24, 0.05, 18),
+      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.55, transparent: true, opacity: 0.92 }),
+    );
+    plate.position.y = -0.06;
+    plate.castShadow = true;
+
+    const halo = new THREE.Mesh(
+      new THREE.RingGeometry(0.3, 0.42, 28),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
+    );
+    halo.rotation.x = -Math.PI / 2;
+    halo.position.y = -0.02;
+
+    const stem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.018, 0.018, height, 8),
+      new THREE.MeshStandardMaterial({ color: 0xc5d3e6, emissive: 0x3a4d67, emissiveIntensity: 0.4, metalness: 0.35, roughness: 0.4 }),
+    );
+    stem.position.y = height * 0.5;
+    stem.castShadow = true;
+
+    const iconPlate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.42, 0.22, 0.04),
+      new THREE.MeshStandardMaterial({ color: 0x101a28, emissive: color, emissiveIntensity: 0.45, metalness: 0.08, roughness: 0.5 }),
+    );
+    iconPlate.position.y = height;
+    iconPlate.castShadow = true;
+
+    const icon = new THREE.Mesh(
+      new THREE.RingGeometry(0.055, 0.1, 4),
+      new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }),
+    );
+    icon.position.set(0, height, 0.03);
+    icon.rotation.z = Math.PI / 4;
+
+    const labelSprite = this.createTextSprite(label, color);
+    labelSprite.position.set(0, height + 0.18, 0);
+    labelSprite.scale.set(0.86, 0.26, 1);
+
+    beacon.add(plate, halo, stem, iconPlate, icon, labelSprite);
+    return beacon;
+  }
+
+  private createTextSprite(text: string, accent: number): THREE.Sprite {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 128;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return new THREE.Sprite();
+    }
+
+    const accentHex = `#${accent.toString(16).padStart(6, '0')}`;
+    context.fillStyle = 'rgba(7, 11, 18, 0.88)';
+    context.fillRect(18, 22, 476, 84);
+    context.strokeStyle = accentHex;
+    context.lineWidth = 6;
+    context.strokeRect(18, 22, 476, 84);
+    context.fillStyle = '#ecf6ff';
+    context.font = '700 42px sans-serif';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(text, 256, 66);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+    return new THREE.Sprite(material);
+  }
+
+  private addAccentLight(position: THREE.Vector3, color: number, intensity: number, distance: number): void {
+    const light = new THREE.PointLight(color, intensity, distance, 2);
+    light.position.copy(position);
+    this.scene.add(light);
+
+    const glow = new THREE.Mesh(
+      new THREE.CircleGeometry(0.38, 22),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.22, side: THREE.DoubleSide }),
+    );
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.copy(position).setY(0.05);
+    this.scene.add(glow);
+  }
+
+  private addGuidanceLighting(): void {
+    const routeBeacons = [
+      { pos: new THREE.Vector3(8.9, 0.35, 16.95), color: 0x7fd6ff, intensity: 1.4, distance: 4.3 },
+      { pos: new THREE.Vector3(10.35, 0.28, 12), color: 0x72b9ff, intensity: 0.85, distance: 3.6 },
+      { pos: new THREE.Vector3(18.05, 0.28, 16), color: 0x72b9ff, intensity: 0.95, distance: 3.9 },
+      { pos: new THREE.Vector3(22.2, 0.28, 10), color: 0xffbf6f, intensity: 1.05, distance: 3.8 },
+      { pos: new THREE.Vector3(24.6, 0.35, 8), color: 0xff8b73, intensity: 1.3, distance: 4.1 },
+      { pos: new THREE.Vector3(29, 0.35, 8.5), color: 0xffd56b, intensity: 1.55, distance: 4.4 },
+      { pos: new THREE.Vector3(24.7, 0.35, 14.2), color: 0xff6d57, intensity: 1.15, distance: 4.1 },
+      { pos: new THREE.Vector3(18.2, 0.35, 12), color: 0xffd56b, intensity: 1.1, distance: 4.2 },
+      { pos: new THREE.Vector3(13.6, 0.35, 12), color: 0x92fff1, intensity: 1.05, distance: 4.4 },
+    ];
+
+    for (const beacon of routeBeacons) {
+      this.addAccentLight(beacon.pos, beacon.color, beacon.intensity, beacon.distance);
+    }
+  }
+
+  private addLandmarks(): void {
+    const metalMaterial = new THREE.MeshStandardMaterial({ color: 0x92a3bd, roughness: 0.45, metalness: 0.62 });
+    const woodMaterial = new THREE.MeshStandardMaterial({ color: 0x6d5135, roughness: 0.88, metalness: 0.06 });
+    const clothMaterial = new THREE.MeshStandardMaterial({ color: 0x6e1f2c, roughness: 0.9, metalness: 0.02, side: THREE.DoubleSide });
+    const shelfMaterial = new THREE.MeshStandardMaterial({ color: 0x49576d, roughness: 0.84, metalness: 0.08 });
+
+    const cellBars = new THREE.Group();
+    for (let index = 0; index < 5; index += 1) {
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.2, 10), metalMaterial);
+      bar.position.set(2.1 + index * 0.42, 1.15, 11.1);
+      bar.castShadow = true;
+      cellBars.add(bar);
+    }
+    const topRail = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.1, 0.12), metalMaterial);
+    topRail.position.set(2.94, 2.1, 11.1);
+    topRail.castShadow = true;
+    const bottomRail = topRail.clone();
+    bottomRail.position.y = 0.22;
+    cellBars.add(topRail, bottomRail);
+    this.scene.add(cellBars);
+
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 4.8, 12), metalMaterial);
+    pipe.rotation.z = Math.PI / 2;
+    pipe.position.set(15.9, 2.2, 18.1);
+    pipe.castShadow = true;
+    const drip = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.35, 10), new THREE.MeshStandardMaterial({ color: 0x84d7ff, emissive: 0x1e5f85, emissiveIntensity: 0.65 }));
+    drip.position.set(16.4, 1.2, 18.1);
+    const puddle = new THREE.Mesh(new THREE.CircleGeometry(0.4, 20), new THREE.MeshBasicMaterial({ color: 0x5eb8ff, transparent: true, opacity: 0.34 }));
+    puddle.rotation.x = -Math.PI / 2;
+    puddle.position.set(16.4, 0.03, 18.1);
+    this.scene.add(pipe, drip, puddle);
+
+    const shelves = new THREE.Group();
+    for (let row = 0; row < 3; row += 1) {
+      const board = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.1, 2.4), shelfMaterial);
+      board.position.set(16.6, 0.55 + row * 0.65, 8.2);
+      board.castShadow = true;
+      shelves.add(board);
+    }
+    for (const x of [15.45, 16.6, 17.75]) {
+      const support = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.85, 0.1), shelfMaterial);
+      support.position.set(x, 0.96, 8.2);
+      support.castShadow = true;
+      shelves.add(support);
+    }
+    this.scene.add(shelves);
+
+    const desk = new THREE.Group();
+    const deskTop = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.16, 0.92), woodMaterial);
+    deskTop.position.set(27.5, 1.02, 8.9);
+    deskTop.castShadow = true;
+    desk.add(deskTop);
+    for (const offsetX of [-0.72, 0.72]) {
+      for (const offsetZ of [-0.28, 0.28]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.96, 0.12), woodMaterial);
+        leg.position.set(27.5 + offsetX, 0.5, 8.9 + offsetZ);
+        leg.castShadow = true;
+        desk.add(leg);
+      }
+    }
+    const ledger = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.05, 0.28), new THREE.MeshStandardMaterial({ color: 0x7fd6ff, emissive: 0x1a5475, emissiveIntensity: 0.55 }));
+    ledger.position.set(27.7, 1.14, 8.82);
+    desk.add(ledger);
+    this.scene.add(desk);
+
+    const kennelGate = new THREE.Group();
+    for (let index = 0; index < 4; index += 1) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2, 0.08), metalMaterial);
+      bar.position.set(26 + index * 0.38, 1, 12.15);
+      bar.castShadow = true;
+      kennelGate.add(bar);
+    }
+    const gateCross = new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.1, 0.1), metalMaterial);
+    gateCross.position.set(26.57, 1.86, 12.15);
+    gateCross.castShadow = true;
+    kennelGate.add(gateCross);
+    this.scene.add(kennelGate);
+
+    const bannerPole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.4, 10), metalMaterial);
+    bannerPole.position.set(20.9, 1.4, 10.35);
+    bannerPole.castShadow = true;
+    const banner = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 1.25), clothMaterial);
+    banner.position.set(20.45, 1.45, 10.35);
+    banner.rotation.y = Math.PI / 2;
+    const seal = new THREE.Mesh(new THREE.CircleGeometry(0.16, 18), new THREE.MeshBasicMaterial({ color: 0xffd56b }));
+    seal.position.set(20.06, 1.45, 10.36);
+    seal.rotation.y = Math.PI / 2;
+    this.scene.add(bannerPole, banner, seal);
+
+    const portcullis = new THREE.Group();
+    for (let index = 0; index < 6; index += 1) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.2, 0.08), metalMaterial);
+      bar.position.set(13.05 + index * 0.4, 1.2, 10.15);
+      bar.castShadow = true;
+      portcullis.add(bar);
+    }
+    const topBeam = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.14, 0.16), metalMaterial);
+    topBeam.position.set(14.05, 2.25, 10.15);
+    topBeam.castShadow = true;
+    portcullis.add(topBeam);
+    this.scene.add(portcullis);
   }
 
   private render = (): void => {
@@ -1675,7 +1889,7 @@ class DungeonCrawlerApp {
       this.player.hasWeapon = true;
       this.objectiveHints.add('weapon');
       this.sound.play('keyPickup');
-      this.setMessage('Confiscated shiv recovered. Bare-handed flailing upgrades into real combat.');
+      this.setMessage('Shiv recovered — key is near the kennel rail. Steel first, gate later.');
       return;
     }
 
@@ -1702,7 +1916,7 @@ class DungeonCrawlerApp {
       this.player.torchOn = false;
       this.torchPickup.mesh.visible = false;
       this.sound.play('torchPickup');
-      this.setMessage('Torch recovered. Q toggles it, but the extra light burns your timer down faster.');
+      this.setMessage('Torch recovered — blue guidance pools now cut through the cell block gloom.');
       return;
     }
 
@@ -1712,7 +1926,7 @@ class DungeonCrawlerApp {
       this.key.mesh.visible = false;
       this.objectiveHints.add('key');
       this.sound.play('keyPickup');
-      this.setMessage('Key secured. Tiny chaos, maximum usefulness.');
+      this.setMessage('Brass key secured — return to the exit portcullis before the Warden closes in.');
       return;
     }
 
